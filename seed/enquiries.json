@@ -1,0 +1,8 @@
+[
+  {
+    "customer_name": "Sample customer",
+    "customer_email": "customer@example.invalid",
+    "subject": "Return eligibility",
+    "message": "I bought an unused desk lamp two weeks ago and would like to know whether I can return it."
+  }
+]
