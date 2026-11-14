@@ -1,11 +1,12 @@
 import io
+import re
 from dataclasses import dataclass
 
 from pypdf import PdfReader
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.llm import embed
+from app.llm import embed, provider_supports_embeddings
 from app.models import Document, KnowledgeChunk
 from app.settings_store import setting_value
 
@@ -16,6 +17,11 @@ class RetrievedSource:
     chunk_id: str
     content: str
     distance: float
+
+
+def _full_text_query(query: str) -> str:
+    terms = list(dict.fromkeys(re.findall(r"[A-Za-z0-9_]+", query.lower())))[:64]
+    return " | ".join(terms)
 
 
 def extract_text(name: str, content_type: str, content: bytes) -> str:
@@ -44,9 +50,11 @@ async def ingest_document(
     db.add(document)
     db.flush()
     for index, content in enumerate(chunks):
-        vector = await embed(
-            db, content, task_id=task_id, step_id=step_id, session_id=session_id
-        )
+        vector = None
+        if provider_supports_embeddings():
+            vector = await embed(
+                db, content, task_id=task_id, step_id=step_id, session_id=session_id
+            )
         db.add(KnowledgeChunk(
             document_id=document.id, chunk_index=index, content=content, embedding=vector
         ))
@@ -62,17 +70,33 @@ async def retrieve(
     task_id: str | None = None,
     step_id: str | None = None,
 ) -> list[RetrievedSource]:
-    vector = await embed(db, query, task_id=task_id, step_id=step_id)
     count = int(setting_value(db, "top_k")) if top_k is None else top_k
     count = max(1, min(count, 20))
-    distance = KnowledgeChunk.embedding.cosine_distance(vector)
-    rows = db.execute(
-        select(Document.name, KnowledgeChunk.id, KnowledgeChunk.content, distance.label("distance"))
-        .join(KnowledgeChunk, KnowledgeChunk.document_id == Document.id)
-        .where(KnowledgeChunk.embedding.is_not(None))
-        .order_by(distance)
-        .limit(count)
-    ).all()
+    if provider_supports_embeddings():
+        vector = await embed(db, query, task_id=task_id, step_id=step_id)
+        distance = KnowledgeChunk.embedding.cosine_distance(vector)
+        statement = (
+            select(Document.name, KnowledgeChunk.id, KnowledgeChunk.content, distance.label("distance"))
+            .join(KnowledgeChunk, KnowledgeChunk.document_id == Document.id)
+            .where(KnowledgeChunk.embedding.is_not(None))
+            .order_by(distance)
+            .limit(count)
+        )
+    else:
+        search_vector = func.to_tsvector("simple", KnowledgeChunk.content)
+        query_terms = _full_text_query(query)
+        if not query_terms:
+            return []
+        query_vector = func.to_tsquery("simple", query_terms)
+        rank = func.ts_rank_cd(search_vector, query_vector)
+        statement = (
+            select(Document.name, KnowledgeChunk.id, KnowledgeChunk.content, (1 - rank).label("distance"))
+            .join(KnowledgeChunk, KnowledgeChunk.document_id == Document.id)
+            .where(search_vector.op("@@")(query_vector))
+            .order_by(rank.desc())
+            .limit(count)
+        )
+    rows = db.execute(statement).all()
     return [
         RetrievedSource(document=row.name, chunk_id=row.id, content=row.content, distance=float(row.distance))
         for row in rows

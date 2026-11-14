@@ -1,6 +1,6 @@
 # WorkPilot AI
 
-WorkPilot turns a plain-language business instruction into an LLM-generated, dependency-ordered plan. Stored agent profiles and allowed tools drive agent assignment at runtime. Agents retrieve relevant company knowledge from PostgreSQL/pgvector and read sales summaries from imported database rows. An LLM validator checks drafts against retrieved policy chunks. A person approves, edits, or rejects every final draft before the active connector publishes it.
+WorkPilot turns a plain-language business instruction into an LLM-generated, dependency-ordered plan. Stored agent profiles and allowed tools drive agent assignment at runtime. Agents retrieve relevant company knowledge from PostgreSQL/pgvector or PostgreSQL full-text search, depending on provider embedding support, and read sales summaries from imported database rows. An LLM validator checks drafts against retrieved policy chunks. A person approves, edits, or rejects every final draft before the active connector publishes it.
 
 ## Architecture
 
@@ -20,12 +20,12 @@ FastAPI (Render)
             ▼
 PostgreSQL + pgvector (Neon or Supabase)
   ├─ agents, settings, tasks, steps, events, enquiries, sales rows
-  └─ documents, embedded chunks, sent items
+  └─ documents, indexed chunks, sent items
 ```
 
 ## Run locally
 
-1. Create a PostgreSQL database with the `vector` extension available. Copy `.env.example` to `.env` and set `DATABASE_URL` plus one model provider's server-only credentials. Google Gemini Developer API free-tier settings use `LLM_PROVIDER=gemini`, `GEMINI_API_KEY`, `GEMINI_BASE_URL`, `GEMINI_MODEL`, and `GEMINI_EMBEDDING_MODEL`; OpenAI remains available through its `OPENAI_*` variables.
+1. Create a PostgreSQL database with the `vector` extension available. Copy `.env.example` to `.env` and set `DATABASE_URL` plus one model provider's server-only credentials. Google Gemini uses `LLM_PROVIDER=gemini` and the `GEMINI_*` variables; GroqCloud uses `LLM_PROVIDER=groq`, `GROQ_API_KEY`, `GROQ_BASE_URL`, and `GROQ_MODEL`; OpenAI remains available through its `OPENAI_*` variables. Groq chat uses PostgreSQL full-text retrieval for knowledge because Groq does not expose embeddings; Gemini and OpenAI use pgvector embeddings.
 2. Set `FRONTEND_ORIGINS` to the frontend origin and set `PORT` in the backend shell. Configure the browser-visible `NEXT_PUBLIC_API_BASE_URL` to the backend origin in the frontend shell.
 3. In PowerShell, install and start the backend:
 
@@ -47,16 +47,16 @@ PostgreSQL + pgvector (Neon or Supabase)
 
 The backend runs migrations and idempotent sample import on startup. Sample records are kept in `/seed` and tagged as sample in the interface. When the embedding provider is configured, seed import embeds the sample policy through the same provider path used by document uploads. Without provider configuration, the service stays available and records that sample indexing is pending; tasks report provider errors rather than returning generated-looking defaults.
 
-Settings are stored in the database and editable in the Settings page. Enter provider-specific input, output, and embedding prices there to make the USD cost cap meaningful. The request cap and per-minute limiter remain active independently. The Gemini free tier has provider-enforced quotas that can change and does not guarantee uninterrupted capacity; avoid submitting sensitive customer data unless the provider's current data-use terms meet your requirements. Configure the SMTP environment variables and `CONNECTOR_ADAPTER=smtp` only when approved output should be delivered to a real recipient; the default connector stores approved items in the database.
+Settings are stored in the database and editable in the Settings page. Enter provider-specific input, output, and embedding prices there to make the USD cost cap meaningful. The request cap and per-minute limiter remain active independently. Gemini and Groq free-tier access is subject to provider-enforced quotas that can change and does not guarantee uninterrupted capacity; avoid submitting sensitive customer data unless the provider's current data-use terms meet your requirements. Configure the SMTP environment variables and `CONNECTOR_ADAPTER=smtp` only when approved output should be delivered to a real recipient; the default connector stores approved items in the database.
 
 ## Deploy
 
 1. Provision PostgreSQL with pgvector on Neon or Supabase.
 2. Deploy the repository's `render.yaml` as a Render Blueprint, then provide its required database, model, and frontend-origin environment values. Render applies Alembic migrations and imports seed data before serving. `/health` is the service health check and `/api/docs` is the API reference.
 3. Import `frontend/` as a Next.js project on Vercel. Set `NEXT_PUBLIC_API_BASE_URL` to the Render service origin and redeploy. Set the Render `FRONTEND_ORIGINS` value to the deployed frontend origin.
-4. Configure model cost prices in Settings. For Gemini, create an API key in Google AI Studio and add it as `GEMINI_API_KEY` in Render; keep API keys and SMTP credentials in backend environment settings only.
+4. Configure model cost prices in Settings. For Gemini, create an API key in Google AI Studio and add it as `GEMINI_API_KEY` in Render. For Groq, create an API key at [GroqCloud](https://console.groq.com/keys), set `LLM_PROVIDER=groq`, and add it as `GROQ_API_KEY` in Render. Set the Settings-page `model_name` to match `GROQ_MODEL`. Keep API keys and SMTP credentials in backend environment settings only.
 
-The public frontend is [work-pilot-ai-tawny.vercel.app](https://work-pilot-ai-tawny.vercel.app). The Render API is [workpilot-ai-api.onrender.com](https://workpilot-ai-api.onrender.com), with interactive docs at [/api/docs](https://workpilot-ai-api.onrender.com/api/docs); Neon project `workpilot-ai` is in Sydney. The Neon database is connected and migrations have run. The exposed OpenAI key was revoked and removed from Render. The backend is being switched to the Gemini Developer API; create a Gemini API key in Google AI Studio and enter it directly in Render's `GEMINI_API_KEY` secret field. Never put provider keys in frontend variables, source control, or chat. Gemini free-tier limits are imposed by Google, may change, and can cause capacity errors. The model migration requires re-embedding stored knowledge before RAG is usable; task completion and approval must be reverified after the key is configured.
+The public frontend is [work-pilot-ai-tawny.vercel.app](https://work-pilot-ai-tawny.vercel.app). The Render API is [workpilot-ai-api.onrender.com](https://workpilot-ai-api.onrender.com), with interactive docs at [/api/docs](https://workpilot-ai-api.onrender.com/api/docs); Neon project `workpilot-ai` is in Sydney. The Neon database is connected and migrations have run. The exposed OpenAI key was revoked and removed from Render. The backend must have a valid server-side provider key before AI requests can run. Never put provider keys in frontend variables, source control, or chat. Gemini and Groq free-tier limits are imposed by their providers, may change, and can cause capacity errors. When switching providers, update the Settings-page `model_name` to match the selected provider. Switching from Gemini/OpenAI to Groq needs no embedding migration; knowledge retrieval uses PostgreSQL full-text matching instead of vector similarity.
 
 ## Two-minute demo
 

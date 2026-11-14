@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
 
-from app.knowledge import extract_text
+from app.knowledge import _full_text_query, extract_text
 from app.llm import (
     ModelRequestError,
     _chat_request,
@@ -16,6 +16,7 @@ from app.llm import (
     _provider_config,
     _request_headers,
     _request_url,
+    provider_supports_embeddings,
 )
 from app.main import list_events
 from app.models import Task
@@ -77,6 +78,40 @@ class GeminiProviderTests(unittest.TestCase):
             provider, api_key, base_url = _provider_config()
 
         self.assertEqual((provider, api_key, base_url), ("gemini", "server-secret", "https://provider.invalid/v1beta"))
+
+    def test_groq_provider_uses_its_server_settings(self):
+        config = SimpleNamespace(
+            llm_provider="groq",
+            groq_api_key="server-secret",
+            groq_base_url="https://api.groq.com/openai/v1/",
+        )
+        with patch("app.llm.get_config", return_value=config):
+            provider, api_key, base_url = _provider_config()
+
+        self.assertEqual((provider, api_key, base_url), ("groq", "server-secret", "https://api.groq.com/openai/v1"))
+        self.assertEqual(
+            _request_headers("groq", "server-secret", "chat/completions"),
+            {"Authorization": "Bearer server-secret"},
+        )
+        self.assertEqual(
+            _request_url(provider, base_url, "chat/completions"),
+            "https://api.groq.com/openai/v1/chat/completions",
+        )
+        endpoint, payload = _chat_request(
+            provider,
+            "openai/gpt-oss-120b",
+            [{"role": "user", "content": "Create a plan."}],
+            512,
+            True,
+        )
+        self.assertEqual(endpoint, "chat/completions")
+        self.assertEqual(payload["model"], "openai/gpt-oss-120b")
+        self.assertEqual(payload["max_completion_tokens"], 512)
+        self.assertEqual(payload["response_format"]["type"], "json_object")
+
+    def test_groq_does_not_claim_embedding_support(self):
+        with patch("app.llm.get_config", return_value=SimpleNamespace(llm_provider="groq")):
+            self.assertFalse(provider_supports_embeddings())
 
     def test_gemini_chat_and_embedding_requests_use_provider_contracts(self):
         self.assertEqual(
@@ -162,6 +197,10 @@ class ActivityScopeTests(unittest.TestCase):
 
 
 class IngestionTests(unittest.TestCase):
+    def test_full_text_query_is_sanitized_and_uses_unique_terms(self):
+        self.assertEqual(_full_text_query("Policy, policy! Keep-all"), "policy | keep | all")
+        self.assertEqual(_full_text_query("***"), "")
+
     def test_seed_csv_is_parseable(self):
         rows, headers = parse_sales_csv((ROOT / "seed" / "sales.csv").read_bytes())
         self.assertEqual(len(rows), 4)

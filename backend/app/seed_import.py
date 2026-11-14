@@ -10,7 +10,7 @@ from app.config import get_config
 from app.database import SessionLocal
 from app.enquiries import create_enquiry
 from app.knowledge import ingest_document
-from app.llm import ModelRequestError, provider_is_configured
+from app.llm import ModelRequestError, provider_is_configured, provider_supports_embeddings
 from app.migrate import run_migrations
 from app.models import Agent, Document, Enquiry, Event, Setting
 from app.sales import import_sales_rows
@@ -23,19 +23,21 @@ SEED = ROOT / "seed"
 
 async def import_seed_data() -> None:
     config = get_config()
+    provider = config.llm_provider.strip().lower()
+    default_model = {
+        "gemini": config.gemini_model,
+        "groq": config.groq_model,
+        "openai": config.openai_model,
+    }.get(provider, "")
+    default_embedding_model = {
+        "gemini": config.gemini_embedding_model,
+        "openai": config.openai_embedding_model,
+    }.get(provider, "")
     run_migrations()
     with SessionLocal() as db:
         for record in json.loads((SEED / "settings.json").read_text(encoding="utf-8")):
             if db.get(Setting, record["key"]) is None:
                 value = record["value"]
-                default_model = (
-                    config.gemini_model if config.llm_provider.strip().lower() == "gemini" else config.openai_model
-                )
-                default_embedding_model = (
-                    config.gemini_embedding_model
-                    if config.llm_provider.strip().lower() == "gemini"
-                    else config.openai_embedding_model
-                )
                 if record["key"] == "model_name" and not value:
                     value = default_model
                 elif record["key"] == "embedding_model_name" and not value:
@@ -47,14 +49,6 @@ async def import_seed_data() -> None:
                 json.loads((SEED / "example-instructions.json").read_text(encoding="utf-8")),
                 "Sample instructions displayed by the Control Hub.",
             )
-        default_model = (
-            config.gemini_model if config.llm_provider.strip().lower() == "gemini" else config.openai_model
-        )
-        default_embedding_model = (
-            config.gemini_embedding_model
-            if config.llm_provider.strip().lower() == "gemini"
-            else config.openai_embedding_model
-        )
         if db.get(Setting, "model_name") is None:
             upsert_setting(db, "model_name", default_model, "Chat model name; provider credentials remain server-side.")
         if db.get(Setting, "embedding_model_name") is None:
@@ -73,14 +67,20 @@ async def import_seed_data() -> None:
         existing_sample = db.scalar(select(Document).where(Document.name == "sample: knowledge.md"))
         db.commit()
         if existing_sample is None:
-            if provider_is_configured() and default_embedding_model:
+            if provider_is_configured() and (
+                default_embedding_model or not provider_supports_embeddings()
+            ):
                 content = (SEED / "knowledge.md").read_text(encoding="utf-8")
                 try:
                     document = await ingest_document(db, "sample: knowledge.md", "text/markdown", content)
                     db.add(Event(
                         event_type="seed_knowledge_ready",
-                        message="Sample knowledge was embedded and indexed.",
-                        details={"document_id": document.id, "chunk_count": len(document.chunks)},
+                        message="Sample knowledge was indexed for retrieval.",
+                        details={
+                            "document_id": document.id,
+                            "chunk_count": len(document.chunks),
+                            "retrieval_mode": "vector" if provider_supports_embeddings() else "full_text",
+                        },
                     ))
                     db.commit()
                 except ModelRequestError as error:

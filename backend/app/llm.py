@@ -32,8 +32,12 @@ def _provider_config() -> tuple[str, str, str]:
         api_key, base_url = config.openai_api_key, config.openai_base_url
     elif provider == "gemini":
         api_key, base_url = config.gemini_api_key, config.gemini_base_url
+    elif provider == "groq":
+        api_key, base_url = config.groq_api_key, config.groq_base_url
     else:
-        raise ModelRequestError(f"Unsupported LLM_PROVIDER '{provider}'. Choose openai or gemini.")
+        raise ModelRequestError(
+            f"Unsupported LLM_PROVIDER '{provider}'. Choose openai, gemini, or groq."
+        )
     if not api_key:
         raise ModelRequestError(f"Configure the API key for the selected provider ({provider}) on the server.")
     if not base_url:
@@ -47,6 +51,10 @@ def provider_is_configured() -> bool:
     except ModelRequestError:
         return False
     return True
+
+
+def provider_supports_embeddings() -> bool:
+    return get_config().llm_provider.strip().lower() in {"openai", "gemini"}
 
 
 def _request_url(provider: str, base_url: str, endpoint: str) -> str:

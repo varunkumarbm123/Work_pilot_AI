@@ -21,7 +21,7 @@ from app.database import SessionLocal, engine
 from app.enquiries import create_enquiry
 from app.knowledge import extract_text, ingest_document
 from app.limits import reserve_session_request
-from app.llm import ModelRequestError, embed, provider_is_configured
+from app.llm import ModelRequestError, embed, provider_is_configured, provider_supports_embeddings
 from app.migrate import run_migrations
 from app.models import Agent, Document, Enquiry, Event, KnowledgeChunk, SentItem, Setting, Task, TaskStep
 from app.orchestrator import AVAILABLE_TOOLS
@@ -213,7 +213,10 @@ def health(db: Session = Depends(get_db)):
         configured = bool(
             provider_is_configured()
             and setting_value(db, "model_name")
-            and setting_value(db, "embedding_model_name")
+            and (
+                setting_value(db, "embedding_model_name")
+                or not provider_supports_embeddings()
+            )
         )
         connector = get_connector(get_config())
     except ValueError as error:
@@ -692,6 +695,11 @@ async def update_setting(
         valid = isinstance(value, str)
     if not valid:
         raise HTTPException(status_code=422, detail=f"Setting '{key}' requires the same JSON value type.")
+    if key == "embedding_model_name" and not provider_supports_embeddings():
+        raise HTTPException(
+            status_code=409,
+            detail="The selected model provider has no embedding API; knowledge retrieval uses PostgreSQL full-text search.",
+        )
     setting.value = value
     if key == "embedding_model_name" and value != current:
         chunks = db.scalars(select(KnowledgeChunk).order_by(KnowledgeChunk.document_id, KnowledgeChunk.chunk_index)).all()

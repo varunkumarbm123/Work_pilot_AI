@@ -27,6 +27,12 @@ services:
         value: gemini-4-hydrogen
       - key: GEMINI_EMBEDDING_MODEL
         value: gemini-embedding-001
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
       - key: FRONTEND_ORIGINS
         sync: false
       - key: CONNECTOR_ADAPTER
