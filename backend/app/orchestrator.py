@@ -9,6 +9,16 @@ from app.settings_store import setting_value
 
 
 AVAILABLE_TOOLS = {"knowledge_search", "sales_summary", "enquiry_search"}
+LEGACY_TOOL_ALIASES = {"sales_query": "sales_summary"}
+
+
+def normalize_agent_tools(tools: list[str]) -> list[str]:
+    normalized = []
+    for tool in tools:
+        canonical = LEGACY_TOOL_ALIASES.get(tool, tool)
+        if canonical not in normalized:
+            normalized.append(canonical)
+    return normalized
 
 
 class InvalidPlan(ValueError):
@@ -16,7 +26,7 @@ class InvalidPlan(ValueError):
 
 
 def _allowed_tools(agent: Agent) -> set[str]:
-    tools = set(agent.allowed_tools) & AVAILABLE_TOOLS
+    tools = set(normalize_agent_tools(agent.allowed_tools)) & AVAILABLE_TOOLS
     if not agent.knowledge_access:
         tools.discard("knowledge_search")
     return tools

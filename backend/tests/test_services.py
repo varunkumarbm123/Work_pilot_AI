@@ -20,7 +20,7 @@ from app.llm import (
 )
 from app.main import list_events
 from app.models import Task
-from app.orchestrator import create_plan
+from app.orchestrator import _allowed_tools, create_plan, normalize_agent_tools
 from app.sales import parse_sales_csv
 from app.settings_store import setting_value
 from app.state import InvalidTransition, transition_task
@@ -243,6 +243,15 @@ class StateMachineTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
+    def test_legacy_sales_tool_name_is_normalized(self):
+        agent = SimpleNamespace(
+            allowed_tools=["sales_query", "knowledge_search", "sales_summary"],
+            knowledge_access=False,
+        )
+
+        self.assertEqual(normalize_agent_tools(agent.allowed_tools), ["sales_summary", "knowledge_search"])
+        self.assertEqual(_allowed_tools(agent), {"sales_summary"})
+
     async def test_plan_prompt_requires_tools_needed_for_correctness(self):
         agent = SimpleNamespace(
             id="sales-agent",

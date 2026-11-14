@@ -24,7 +24,7 @@ from app.limits import reserve_session_request
 from app.llm import ModelRequestError, embed, provider_is_configured, provider_supports_embeddings
 from app.migrate import run_migrations
 from app.models import Agent, Document, Enquiry, Event, KnowledgeChunk, SentItem, Setting, Task, TaskStep
-from app.orchestrator import AVAILABLE_TOOLS
+from app.orchestrator import AVAILABLE_TOOLS, normalize_agent_tools
 from app.sales import import_sales_rows, parse_sales_csv, sales_summary
 from app.seed_import import import_seed_data
 from app.settings_store import setting_value, settings_map
@@ -135,7 +135,7 @@ def _agent_dict(agent: Agent) -> dict:
         "name": agent.name,
         "role": agent.role,
         "instructions": agent.instructions,
-        "allowed_tools": agent.allowed_tools,
+        "allowed_tools": normalize_agent_tools(agent.allowed_tools),
         "knowledge_access": agent.knowledge_access,
         "source": agent.source,
         "sample": agent.source == "sample",
