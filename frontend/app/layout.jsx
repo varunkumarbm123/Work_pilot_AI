@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "WorkPilot AI",
-  description: "A human-guided AI workforce for customer enquiries and sales reporting.",
+  title: "WorkPilot",
+  description: "A business workspace for knowledge documents, sales records, and customer enquiries.",
 };
 
 export default function RootLayout({ children }) {

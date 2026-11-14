@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.models import Enquiry, Event
+from app.models import Enquiry
 
 
 def create_enquiry(
@@ -19,12 +19,6 @@ def create_enquiry(
         source=source,
     )
     db.add(enquiry)
-    db.flush()
-    db.add(Event(
-        event_type="enquiry_created",
-        message="A customer enquiry was added to the workspace.",
-        details={"enquiry_id": enquiry.id, "source": source},
-    ))
     db.commit()
     db.refresh(enquiry)
     return enquiry
