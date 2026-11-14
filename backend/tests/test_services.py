@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,13 +21,13 @@ from app.llm import (
     _request_url,
     provider_supports_embeddings,
 )
-from app.main import SettingInput, app, list_events, update_setting
+from app.main import ApprovalInput, SettingInput, app, list_events, review_task, retry_task, update_setting
 from app.models import KnowledgeChunk, Task
 from app.orchestrator import _allowed_tools, create_plan, normalize_agent_tools
 from app.sales import parse_sales_csv
 from app.settings_store import setting_value
 from app.state import InvalidTransition, transition_task
-from app.status import TaskStatus
+from app.status import StepStatus, TaskStatus
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -242,6 +243,77 @@ class ApiSurfaceTests(unittest.TestCase):
         self.assertIn("/api/approvals", paths)
         self.assertIn("/api/events", paths)
         self.assertFalse(any("/chat" in path for path in paths))
+
+
+class ApprovalExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rejection_schedules_regeneration_on_the_running_event_loop(self):
+        task = SimpleNamespace(
+            id="task-id",
+            status=TaskStatus.AWAITING_APPROVAL.value,
+            shared_context={},
+        )
+        step = SimpleNamespace(
+            id="step-id",
+            agent_id="agent-id",
+            status=StepStatus.AWAITING_APPROVAL.value,
+            completed_at=None,
+        )
+
+        class FakeSession:
+            def get(self, model, item_id):
+                return task
+
+            def scalar(self, statement):
+                return step
+
+            def add(self, item):
+                pass
+
+            def commit(self):
+                pass
+
+        with (
+            patch("app.main.execute_task", new_callable=AsyncMock) as execute_task,
+            patch.object(app.state, "background_tasks", set(), create=True),
+        ):
+            result = await review_task(
+                task.id,
+                ApprovalInput(action="reject", reason="Please remove unsupported assumptions."),
+                db=cast(Session, FakeSession()),
+            )
+            scheduled = list(app.state.background_tasks)
+            self.assertEqual(result, {"status": "regenerating"})
+            self.assertEqual(task.status, TaskStatus.REJECTED.value)
+            self.assertEqual(step.status, StepStatus.QUEUED.value)
+            self.assertEqual(len(scheduled), 1)
+            await asyncio.gather(*scheduled)
+
+        execute_task.assert_awaited_once_with(task.id)
+
+    async def test_failed_task_retry_schedules_on_the_running_event_loop(self):
+        task = SimpleNamespace(id="task-id", status=TaskStatus.FAILED.value)
+
+        class FakeSession:
+            def get(self, model, item_id):
+                return task
+
+            def add(self, item):
+                pass
+
+            def commit(self):
+                pass
+
+        with (
+            patch("app.main.execute_task", new_callable=AsyncMock) as execute_task,
+            patch.object(app.state, "background_tasks", set(), create=True),
+        ):
+            result = await retry_task(task.id, db=cast(Session, FakeSession()))
+            scheduled = list(app.state.background_tasks)
+            self.assertEqual(result, {"status": "retrying"})
+            self.assertEqual(len(scheduled), 1)
+            await asyncio.gather(*scheduled)
+
+        execute_task.assert_awaited_once_with(task.id)
 
 
 class IngestionTests(unittest.TestCase):

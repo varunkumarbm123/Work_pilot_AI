@@ -42,13 +42,14 @@
 - **Next:** Step 6 — deployment configuration, deploy, and live verification.
 
 ## Step 6 — Deployment and live verification
-- **Status:** The prior release at `https://work-pilot-ai-tawny.vercel.app` and backend health were verified. The current uncommitted audit/configuration changes still need deployment.
-- **Environment:** Local deploy credentials and database/provider secrets are unavailable; hosted configuration reported `ai_configured=true` on the prior release.
-- **Known issue:** No novel live task has been submitted, so end-to-end LLM, retrieval, approval, and publication remain unverified.
-- **Next:** Push the validated audit changes, confirm redeployment and public health, then attempt the acceptance flow once.
+- **Status:** Public Vercel/Render deployment is live. Two complete real-provider acceptance tasks were verified: knowledge-backed reply approved/published via the sample connector, and sales report totals checked against database rows, edited, approved, and published.
+- **Environment:** Live health reports PostgreSQL connected, `ai_configured=true`, and Groq configured. Local deploy credentials are not present; deployment is triggered through the configured Git remote.
+- **Known issue:** A live rejection exposed that synchronous approval/retry handlers called `asyncio.create_task` without a running event loop. The rejection persisted, but regeneration did not start and the response surfaced as a CORS fetch error. Both handlers are now async; a regression test verifies rejection schedules the workflow on the active loop. The rejected task remains recoverable through startup recovery after deployment.
+- **Next:** Deploy this fix, verify server recovery regenerates the rejected draft from reviewer feedback, and confirm the public health endpoint.
 
 ## Step 7 — Acceptance checks and zero-hardcoding audit
 - **Status:** In progress.
-- **Validation:** Backend suite (23 tests), frontend production build, and Alembic SQL rendering pass. Audit found only documented protocol/test/legacy-migration URL and USD references; no credential-shaped values were found. Runtime status names are centralized and API-driven in the UI.
-- **Known issues:** Final live acceptance flow and post-deploy verification are pending.
-- **Next:** Deploy current changes, verify the site/API, and record any provider/quota blocker without repeated retries.
+- **Validation:** Backend suite (25 tests), frontend production build, and Alembic SQL rendering pass. Audit found only documented protocol/test/legacy-migration URL and USD references; no credential-shaped values were found. Runtime status names are centralized and API-driven in the UI. No chat UI or chat endpoint is present.
+- **Live checks:** Fresh LLM plans, differing support/sales plans, knowledge citations, read-only sales totals (34 units and revenue 835 across 2026-11-12 to 2026-11-13), approve/publish, edit/approve/publish, and rejection feedback persistence were exercised on the public site. The rejection regeneration is pending deployment of the event-loop fix.
+- **Known limitations:** Live `cost_tracking_configured=false` because token price settings are zero; request/rate caps remain active. Policy upload, new-agent routing, restart recovery, and post-rejection regeneration still need live verification. The deployed sample knowledge document predates the source seed wording until a fresh database is initialized.
+- **Next:** Deploy and verify recovery/regeneration; then report the tested acceptance items and remaining limitations without repeated provider retries.

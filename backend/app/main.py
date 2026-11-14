@@ -395,7 +395,7 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/tasks/{task_id}/retry")
-def retry_task(task_id: str, db: Session = Depends(get_db)):
+async def retry_task(task_id: str, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -416,7 +416,7 @@ def list_approvals(db: Session = Depends(get_db)):
 
 
 @app.post("/api/approvals/{task_id}")
-def review_task(task_id: str, payload: ApprovalInput, db: Session = Depends(get_db)):
+async def review_task(task_id: str, payload: ApprovalInput, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found.")
