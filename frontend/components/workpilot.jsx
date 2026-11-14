@@ -15,6 +15,7 @@ const NAV_ITEMS = [
 ];
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "");
+const EMPTY_STATUS_CODES = Object.freeze({ task: Object.freeze({}), step: Object.freeze({}) });
 
 function classNames(...values) {
   return values.filter(Boolean).join(" ");
@@ -31,7 +32,6 @@ function formatDuration(seconds) {
 }
 
 function statusLabel(status = "unknown") {
-  if (status === "waiting_capacity") return "waiting for capacity";
   return status.replaceAll("_", " ");
 }
 
@@ -143,8 +143,9 @@ export default function WorkPilot() {
     };
   }, [healthAttempt]);
 
+  const statusCodes = health.body?.status_codes || EMPTY_STATUS_CODES;
   const activePage = useMemo(() => {
-    const shared = { api, sessionId, onNavigate: setPage };
+    const shared = { api, sessionId, onNavigate: setPage, statusCodes };
     if (page === "home") return <ControlHub {...shared} />;
     if (page === "dashboard") return <Dashboard {...shared} />;
     if (page === "agents") return <AgentBuilder {...shared} />;
@@ -154,7 +155,7 @@ export default function WorkPilot() {
     if (page === "activity") return <ActivityLog {...shared} />;
     if (page === "sent") return <SentItems {...shared} />;
     return <SettingsPage {...shared} />;
-  }, [api, page, sessionId]);
+  }, [api, page, sessionId, statusCodes]);
 
   return (
     <div className="app-shell">
@@ -215,12 +216,12 @@ function PageIntro({ eyebrow, title, description, action }) {
   );
 }
 
-function TaskCard({ task, api, onNavigate }) {
+function TaskCard({ task, api, onNavigate, statusCodes }) {
   const [current, setCurrent] = useState(task);
   const [taskError, setTaskError] = useState("");
   useEffect(() => setCurrent(task), [task]);
   useEffect(() => {
-    if (!["planned", "running"].includes(current.status) || !API_BASE) return undefined;
+    if (![statusCodes.task.planned, statusCodes.task.running].includes(current.status) || !API_BASE) return undefined;
     const stream = new EventSource(`${API_BASE}/api/tasks/${current.id}/events/stream`);
     stream.addEventListener("update", (event) => {
       try {
@@ -231,7 +232,7 @@ function TaskCard({ task, api, onNavigate }) {
       }
     });
     return () => stream.close();
-  }, [current.id, current.status]);
+  }, [current.id, current.status, statusCodes]);
 
   return (
     <article className="task-card">
@@ -260,21 +261,21 @@ function TaskCard({ task, api, onNavigate }) {
           <div className="step-meta">Duration: {formatDuration(step.duration_seconds)}</div>
         </div>
       ))}
-      {current.status === "failed" && (
+      {current.status === statusCodes.task.failed && (
         <button className="button button-secondary button-small" onClick={async () => {
-          try { setTaskError(""); await api(`/api/tasks/${current.id}/retry`, { method: "POST" }); setCurrent({ ...current, status: "running" }); }
+          try { setTaskError(""); await api(`/api/tasks/${current.id}/retry`, { method: "POST" }); setCurrent({ ...current, status: statusCodes.task.running }); }
           catch (error) { setTaskError(error.message); }
         }}>Retry task</button>
       )}
       <ErrorNote error={taskError} />
-      {current.status === "awaiting_approval" && (
+      {current.status === statusCodes.task.awaiting_approval && (
         <button className="text-button" onClick={() => onNavigate("approvals")}>Review draft in Approval Inbox →</button>
       )}
     </article>
   );
 }
 
-function ControlHub({ api, onNavigate }) {
+function ControlHub({ api, onNavigate, statusCodes }) {
   const [instruction, setInstruction] = useState("");
   const [agentId, setAgentId] = useState("");
   const [agents, setAgents] = useState([]);
@@ -348,7 +349,7 @@ function ControlHub({ api, onNavigate }) {
           <Panel title="Recent work" eyebrow="LIVE TASKS" action={<button className="text-button" onClick={() => onNavigate("activity")}>View activity →</button>}>
             {loading && <div className="loading-line"><span className="spinner" /> Loading tasks…</div>}
             {!loading && !tasks.length && <Empty>Your recent tasks will appear here after you run an instruction.</Empty>}
-            <div className="task-list">{tasks.map((task) => <TaskCard key={task.id} task={task} api={api} onNavigate={onNavigate} />)}</div>
+            <div className="task-list">{tasks.map((task) => <TaskCard key={task.id} task={task} api={api} onNavigate={onNavigate} statusCodes={statusCodes} />)}</div>
           </Panel>
         </div>
         <aside className="home-aside">
@@ -372,7 +373,7 @@ function ControlHub({ api, onNavigate }) {
   );
 }
 
-function Dashboard({ api, onNavigate }) {
+function Dashboard({ api, onNavigate, statusCodes }) {
   const [dashboard, setDashboard] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -394,8 +395,8 @@ function Dashboard({ api, onNavigate }) {
       {dashboard && <>
         <div className="stats-grid">
           <Metric label="Tasks logged" value={total} foot="From workspace events" />
-          <Metric label="Completed successfully" value={`${Math.round(dashboard.success_rate * 100)}%`} foot={`${statusCounts.done || 0} completed`} />
-          <Metric label="Awaiting review" value={statusCounts.awaiting_approval || 0} foot="Human approval required" />
+          <Metric label="Completed successfully" value={`${Math.round(dashboard.success_rate * 100)}%`} foot={`${statusCounts[statusCodes.task.done] || 0} completed`} />
+          <Metric label="Awaiting review" value={statusCounts[statusCodes.task.awaiting_approval] || 0} foot="Human approval required" />
           <Metric label="Average completion" value={dashboard.average_duration_seconds == null ? "—" : formatDuration(dashboard.average_duration_seconds)} foot="From task transition events" />
         </div>
         <div className="dashboard-grid">
@@ -419,7 +420,7 @@ function Dashboard({ api, onNavigate }) {
         </Panel>
         <Panel title="Latest tasks" eyebrow="LIVE">
           {!tasks.length && <Empty>No tasks have been run yet.</Empty>}
-          <div className="task-list">{tasks.map((task) => <TaskCard key={task.id} task={task} api={api} onNavigate={onNavigate} />)}</div>
+          <div className="task-list">{tasks.map((task) => <TaskCard key={task.id} task={task} api={api} onNavigate={onNavigate} statusCodes={statusCodes} />)}</div>
         </Panel>
       </>}
     </>
@@ -630,7 +631,7 @@ function BusinessData({ api }) {
   );
 }
 
-function ApprovalInbox({ api }) {
+function ApprovalInbox({ api, statusCodes }) {
   const [items, setItems] = useState([]);
   const [drafts, setDrafts] = useState({});
   const [reasons, setReasons] = useState({});
@@ -645,7 +646,7 @@ function ApprovalInbox({ api }) {
   }, [api]);
   useEffect(() => { load(); const timer = setInterval(load, 4000); return () => clearInterval(timer); }, [load]);
   const review = async (task, action) => {
-    const step = task.steps.find((item) => item.status === "awaiting_approval");
+    const step = task.steps.find((item) => item.status === statusCodes.step.awaiting_approval);
     if (!step) { setError("This task no longer has a reviewable draft."); return; }
     setBusyId(task.id); setError(""); setNotice("");
     try {
@@ -669,7 +670,7 @@ function ApprovalInbox({ api }) {
       <ErrorNote error={error} onRetry={load} />{notice && <div className="success-note">{notice}</div>}
       {!items.length && !error && <Panel><Empty>Your approval inbox is clear. Drafts appear here when an agent finishes its work.</Empty></Panel>}
       <div className="approval-list">{items.map((task) => {
-        const step = task.steps.find((item) => item.status === "awaiting_approval");
+        const step = task.steps.find((item) => item.status === statusCodes.step.awaiting_approval);
         if (!step) return null;
         const validation = task.shared_context?.[`step_${step.order_index}`]?.validation;
         return <Panel key={task.id} className="approval-card" title={step.agent_name} eyebrow={`TASK · ${formatTime(task.created_at)}`}>
@@ -775,7 +776,7 @@ function SettingsPage({ api }) {
     <>
       <PageIntro eyebrow="RUNTIME CONFIGURATION" title="Tune how WorkPilot works." description="These values are stored in PostgreSQL and used by orchestration, retrieval, validation, retries, rate limiting, and cost tracking." />
       <ErrorNote error={error} onRetry={load} />{notice && <div className="success-note">{notice}</div>}
-      {health && !health.cost_tracking_configured && <div className="wake-banner">Provider token prices are unset. Request and rate caps remain active, but USD cost estimates require all three token-price settings.</div>}
+      {health && !health.cost_tracking_configured && <div className="wake-banner">Set a billing currency and provider token prices to enable cost estimates and the spend cap.</div>}
       {!settings.length && !error && <div className="loading-line"><span className="spinner" /> Loading settings…</div>}
       <div className="settings-list">{settings.map((setting) => <article className="setting-card" key={setting.key}>
         <div className="setting-info"><strong>{setting.key.replaceAll("_", " ")}</strong><small>{setting.description}</small><code>{setting.key}</code></div>

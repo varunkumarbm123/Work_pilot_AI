@@ -45,7 +45,7 @@ PostgreSQL + pgvector
    npm run dev
    ```
 
-The backend runs migrations and idempotent seed import on startup when `SEED_ON_STARTUP=true`. Provider model names, system instructions, validation policy, retry limits, timeouts, retrieval settings, and cost limits are database-backed and editable in Settings. Provider credentials remain server-side.
+The backend runs migrations and idempotent seed import on startup when `SEED_ON_STARTUP=true`. Provider model names, system instructions, validation policy, retry limits, timeouts, retrieval settings (including chunk overlap), billing currency, token prices, and cost limits are database-backed and editable in Settings. Provider credentials remain server-side.
 
 ### Environment variables
 
@@ -79,11 +79,13 @@ Public links: [WorkPilot website](https://work-pilot-ai-tawny.vercel.app) · [AP
 
 ## Hardcoding audit
 
-No chat UI or chat endpoint is part of the task workflow. Task plans, agent selection, validation verdicts, citations, and reports are generated from live provider calls and database retrieval/tools; there are no canned AI-response fallbacks. Provider credentials are server-side environment variables. Provider/model names, prompts, validation policies, limits, and examples are stored in environment configuration or database settings. Sample agent profiles and business records are isolated under `/seed` and tagged in the UI. Business figures and dashboard counts come from PostgreSQL; sales reports use database summaries, not model-generated arithmetic. Remaining fixed values are bounded safety/input ceilings, provider protocol identifiers, and product workflow status/tool identifiers.
+The source audit found no credentials or provider model-name defaults. Provider endpoints and keys are supplied by server environment variables; frontend API origin is supplied by `NEXT_PUBLIC_API_BASE_URL`. Prompts, models, retry/time limits, retrieval settings (chunk size, overlap, top-k), rate/cost caps, billing currency, token prices, and example briefs are database settings. Task and step state names are centralized in the backend status enums and returned to the UI by `/health`; transition rules are centralized with the task enum. Product API paths, provider protocol identifiers, bounded input/safety ceilings, and CSS state selectors remain fixed implementation identifiers.
+
+There is no chat UI, conversational route, or chat history. The provider adapters use completion protocol paths (including paths named `chat/completions`) to call LLM APIs; this is transport protocol only. Application-source absolute URLs are limited to public deployment links in this README and non-routable provider fixtures in unit tests; the frontend dependency lockfile contains package registry and project metadata links. Historical migrations refer to obsolete USD setting keys only to translate prior settings and event amounts while retaining their legacy unit. Test-only session stubs and asynchronous call patches are not runtime AI fallbacks. Sample records are isolated under `/seed`, stored through the normal importer, and marked as sample in the UI; no customer-company name is embedded in runtime or sample business content. Dashboard counts and sales figures are derived from persisted events and database summaries.
 
 ## Known limitations
 
 - The public demo has no login. Browser session IDs isolate request/cost limits but are not authentication.
 - SMTP is optional; the default sample connector records approved content in the database.
 - Groq does not provide embeddings through the configured API, so its knowledge search uses PostgreSQL full-text retrieval; OpenAI/Gemini configurations use pgvector.
-- External provider quotas and availability are controlled by the provider. On capacity errors, tasks are retained and can be retried.
+- External provider quotas and availability are controlled by the provider. On capacity errors, tasks are retained and can be retried. A complete live acceptance flow still depends on the configured provider and database being available.

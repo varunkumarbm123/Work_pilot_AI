@@ -125,4 +125,4 @@ async def create_plan(
         raise InvalidPlan("The plan must end with exactly one final synthesis step.")
     if plan[-1]["depends_on"] != list(range(len(plan) - 1)):
         raise InvalidPlan("The final synthesis step must depend on every earlier step.")
-    return plan, response.model, response.content, prompt, response.cost_usd
+    return plan, response.model, response.content, prompt, response.cost

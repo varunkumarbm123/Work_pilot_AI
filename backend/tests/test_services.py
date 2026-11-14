@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
-from app.knowledge import _full_text_query, extract_text
+from app.knowledge import _full_text_query, extract_text, ingest_document
 from app.llm import (
     ModelRequestError,
     _chat_request,
@@ -20,12 +20,13 @@ from app.llm import (
     _request_url,
     provider_supports_embeddings,
 )
-from app.main import app, list_events
-from app.models import Task
+from app.main import SettingInput, app, list_events, update_setting
+from app.models import KnowledgeChunk, Task
 from app.orchestrator import _allowed_tools, create_plan, normalize_agent_tools
 from app.sales import parse_sales_csv
 from app.settings_store import setting_value
 from app.state import InvalidTransition, transition_task
+from app.status import TaskStatus
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,6 +67,41 @@ class SettingsTests(unittest.TestCase):
                 return None
 
         self.assertEqual(setting_value(FakeSession(), "example_instructions", []), [])
+
+
+class CurrencySettingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_billing_currency_requires_three_uppercase_letters(self):
+        class FakeSetting:
+            value = ""
+            description = "currency"
+
+        class FakeSession:
+            record = FakeSetting()
+
+            def get(self, model, key):
+                return self.record
+
+            def add(self, value):
+                pass
+
+            def commit(self):
+                pass
+
+        db = FakeSession()
+        with self.assertRaises(HTTPException) as error:
+            await update_setting(
+                "billing_currency",
+                SettingInput(value="abc"),
+                db=cast(Session, db),
+            )
+        self.assertEqual(error.exception.status_code, 422)
+
+        result = await update_setting(
+            "billing_currency",
+            SettingInput(value="ABC"),
+            db=cast(Session, db),
+        )
+        self.assertEqual(result["value"], "ABC")
 
 
 class GeminiProviderTests(unittest.TestCase):
@@ -231,12 +267,47 @@ class IngestionTests(unittest.TestCase):
         self.assertTrue(text.startswith("# Sample"))
 
 
+class KnowledgeChunkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_overlap_preserves_boundary_context_without_duplicate_tail(self):
+        class CaptureSession:
+            def __init__(self):
+                self.added = []
+
+            def add(self, value):
+                self.added.append(value)
+
+            def flush(self):
+                pass
+
+            def commit(self):
+                pass
+
+            def refresh(self, value):
+                pass
+
+        text = "a" * 100 + "b" * 50
+        db = CaptureSession()
+        with (
+            patch(
+                "app.knowledge.setting_value",
+                side_effect=lambda _, key: {"chunk_size": 100, "chunk_overlap": 20}[key],
+            ),
+            patch("app.knowledge.provider_supports_embeddings", return_value=False),
+        ):
+            await ingest_document(
+                cast(Session, db), "policy.md", "text/markdown", text
+            )
+
+        chunks = [item.content for item in db.added if isinstance(item, KnowledgeChunk)]
+        self.assertEqual(chunks, [text[:100], text[80:]])
+
+
 class StateMachineTests(unittest.TestCase):
     def test_valid_transition_is_persisted_and_logged(self):
         db = RecordingSession()
         task = Task(id="task", status="planned")
 
-        transition_task(db, task, "running", "Task execution started.")
+        transition_task(cast(Session, db), task, TaskStatus.RUNNING, "Task execution started.")
 
         self.assertEqual(task.status, "running")
         self.assertEqual(len(db.added), 1)
@@ -247,7 +318,7 @@ class StateMachineTests(unittest.TestCase):
         task = Task(id="task", status="done")
 
         with self.assertRaises(InvalidTransition):
-            transition_task(db, task, "running", "Invalid transition.")
+            transition_task(cast(Session, db), task, TaskStatus.RUNNING, "Invalid transition.")
 
         self.assertEqual(task.status, "done")
         self.assertEqual(db.added, [])
@@ -287,7 +358,7 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
                 '"tools":["sales_summary"],"depends_on":[],"is_final":true}]}'
             ),
             model="test-model",
-            cost_usd=0,
+            cost=0,
         )
         with (
             patch(
@@ -331,7 +402,7 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
                 '"tools":["sales_summary"],"depends_on":[],"is_final":true}]}'
             ),
             model="test-model",
-            cost_usd=0,
+            cost=0,
         )
         db = FakeSession()
         with (

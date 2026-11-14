@@ -45,7 +45,13 @@ async def ingest_document(
     session_id: str | None = None,
 ) -> Document:
     chunk_size = max(100, min(int(setting_value(db, "chunk_size")), 8000))
-    chunks = [text[index : index + chunk_size] for index in range(0, len(text), chunk_size)]
+    overlap = max(0, min(int(setting_value(db, "chunk_overlap")), chunk_size // 2))
+    stride = chunk_size - overlap
+    chunks = []
+    for index in range(0, len(text), stride):
+        chunks.append(text[index : index + chunk_size])
+        if index + chunk_size >= len(text):
+            break
     document = Document(name=name, content_type=content_type)
     db.add(document)
     db.flush()

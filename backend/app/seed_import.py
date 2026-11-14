@@ -50,7 +50,7 @@ async def import_seed_data() -> None:
                 "Sample instructions displayed by the Control Hub.",
             )
         if db.get(Setting, "model_name") is None:
-            upsert_setting(db, "model_name", default_model, "Chat model name; provider credentials remain server-side.")
+            upsert_setting(db, "model_name", default_model, "Completion model name; provider credentials remain server-side.")
         if db.get(Setting, "embedding_model_name") is None:
             upsert_setting(db, "embedding_model_name", default_embedding_model, "Embedding model name; provider credentials remain server-side.")
         db.flush()

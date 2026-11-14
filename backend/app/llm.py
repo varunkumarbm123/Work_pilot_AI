@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_config
 from app.limits import session_spend
 from app.models import Event, Task, TaskStep
+from app.status import StepStatus
 from app.settings_store import setting_value
 
 
@@ -16,7 +17,7 @@ from app.settings_store import setting_value
 class ModelResponse:
     content: str
     model: str
-    cost_usd: float
+    cost: float
 
 
 class ModelRequestError(RuntimeError):
@@ -138,8 +139,8 @@ def _model_and_cost(db: Session, response: dict[str, Any]) -> tuple[str, float]:
     usage = response.get("usage") or {}
     prompt_tokens = int(usage.get("prompt_tokens", 0))
     completion_tokens = int(usage.get("completion_tokens", 0))
-    prompt_rate = float(setting_value(db, "input_cost_per_1k_usd"))
-    completion_rate = float(setting_value(db, "output_cost_per_1k_usd"))
+    prompt_rate = float(setting_value(db, "input_cost_per_1k_tokens"))
+    completion_rate = float(setting_value(db, "output_cost_per_1k_tokens"))
     cost = prompt_tokens * prompt_rate / 1000
     cost += completion_tokens * completion_rate / 1000
     return model, cost
@@ -155,8 +156,11 @@ def _check_model_cost_cap(
         session_id = task.session_id
     if not session_id:
         return
-    spend = session_spend(db, session_id)
-    cap = float(setting_value(db, "cost_cap_usd_per_session"))
+    currency = str(setting_value(db, "billing_currency"))
+    if not currency:
+        return
+    spend = session_spend(db, session_id, currency)
+    cap = float(setting_value(db, "cost_cap_per_session"))
     if spend >= cap:
         raise ModelRequestError(
             "The browser session reached its configured model cost cap; adjust Settings or start a new session."
@@ -191,7 +195,7 @@ async def _post_with_retry(
                     if step_id:
                         step = db.get(TaskStep, step_id)
                         if step is not None:
-                            step.status = "waiting_capacity"
+                            step.status = StepStatus.WAITING_CAPACITY.value
                     db.add(Event(
                         task_id=task_id,
                         event_type="waiting_capacity",
@@ -206,7 +210,7 @@ async def _post_with_retry(
                             details={
                                 "step_id": step_id,
                                 "agent_id": step.agent_id if step else None,
-                                "status": "waiting_capacity",
+                                "status": StepStatus.WAITING_CAPACITY.value,
                             },
                         ))
                     db.commit()
@@ -235,7 +239,7 @@ async def complete(
     _check_model_cost_cap(db, task_id)
     model = str(setting_value(db, "model_name"))
     if not model:
-        raise ModelRequestError("Configure a chat model in Settings.")
+        raise ModelRequestError("Configure a completion model in Settings.")
     provider, _, _ = _provider_config()
     endpoint, payload = _chat_request(
         provider,
@@ -257,21 +261,26 @@ async def embed(
     step_id: str | None = None,
     session_id: str | None = None,
 ) -> list[float]:
-    _check_model_cost_cap(db, task_id, session_id)
     model = str(setting_value(db, "embedding_model_name"))
     if not model:
         raise ModelRequestError("Configure an embedding model in Settings.")
+    _check_model_cost_cap(db, task_id, session_id)
     provider, _, _ = _provider_config()
     endpoint, payload = _embedding_request(provider, model, text)
     response = await _post_with_retry(db, endpoint, payload, task_id, step_id)
     vector, token_count = _embedding_result(provider, response)
-    token_rate = float(setting_value(db, "embedding_cost_per_1k_usd"))
+    token_rate = float(setting_value(db, "embedding_cost_per_1k_tokens"))
     cost = token_count * token_rate / 1000
     db.add(Event(
         task_id=task_id,
         event_type="embedding_call",
         message="A text embedding request completed.",
-        details={"step_id": step_id, "cost_usd": cost, "session_id": session_id},
+        details={
+            "step_id": step_id,
+            "cost": cost,
+            "currency": str(setting_value(db, "billing_currency")),
+            "session_id": session_id,
+        },
         model=str(response.get("model") or model),
     ))
     return vector

@@ -8,13 +8,19 @@ from app.models import Event, Task
 from app.settings_store import setting_value
 
 
-def session_spend(db: Session, session_id: str) -> float:
+def session_spend(db: Session, session_id: str, currency: str) -> float:
+    if not currency:
+        return 0
     task_ids = db.scalars(select(Task.id).where(Task.session_id == session_id)).all()
     conditions = [Event.details["session_id"].as_string() == session_id]
     if task_ids:
         conditions.append(Event.task_id.in_(task_ids))
     events = db.scalars(select(Event).where(or_(*conditions))).all()
-    return sum(float((event.details or {}).get("cost_usd", 0)) for event in events)
+    return sum(
+        float((event.details or {}).get("cost", 0))
+        for event in events
+        if (event.details or {}).get("currency") == currency
+    )
 
 
 def reserve_session_request(db: Session, session_id: str) -> None:
@@ -37,9 +43,10 @@ def reserve_session_request(db: Session, session_id: str) -> None:
     rate = int(setting_value(db, "rate_limit_per_minute"))
     if recent >= rate:
         raise HTTPException(status_code=429, detail="This browser session is temporarily rate limited.")
-    spend = session_spend(db, session_id)
-    cost_cap = float(setting_value(db, "cost_cap_usd_per_session"))
-    if spend >= cost_cap:
+    currency = str(setting_value(db, "billing_currency"))
+    spend = session_spend(db, session_id, currency)
+    cost_cap = float(setting_value(db, "cost_cap_per_session"))
+    if currency and spend >= cost_cap:
         raise HTTPException(status_code=429, detail="This browser session reached its configured model cost cap.")
     db.add(Event(
         event_type="session_request",

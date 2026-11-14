@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.status import EnquiryStatus, StepStatus, TaskStatus
 
 
 def now_utc() -> datetime:
@@ -60,7 +61,7 @@ class Task(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=TaskStatus.PLANNED.value)
     plan: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     shared_context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     session_id: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -80,7 +81,7 @@ class TaskStep(Base):
     agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     tools: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     depends_on: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=StepStatus.QUEUED.value)
     output: Mapped[str] = mapped_column(Text, nullable=False, default="")
     sources: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -118,7 +119,7 @@ class Enquiry(Base):
     customer_email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="new")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default=EnquiryStatus.NEW.value)
     source: Mapped[str] = mapped_column(String(40), nullable=False, default="user")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 

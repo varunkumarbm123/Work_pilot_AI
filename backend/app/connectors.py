@@ -36,7 +36,7 @@ class SMTPConnector:
         if not recipient or "@" not in recipient:
             raise ValueError("Provide a valid recipient email before approving with the SMTP connector.")
         message = EmailMessage()
-        message["Subject"] = "WorkPilot AI approved item"
+        message["Subject"] = "Approved work item"
         message["From"] = self.config.smtp_from_email
         message["To"] = recipient
         message.set_content(content)

@@ -14,6 +14,7 @@ from app.orchestrator import InvalidPlan, create_plan
 from app.sales import sales_summary
 from app.settings_store import setting_value
 from app.state import InvalidTransition, transition_task
+from app.status import StepStatus, TaskStatus
 from app.validator import InvalidVerdict, validate_draft
 
 
@@ -29,7 +30,12 @@ def _record_model_call(
         task_id=task_id,
         event_type="model_call",
         message="A language-model request completed.",
-        details={"step_id": step_id, "prompt": prompt, "cost_usd": cost},
+        details={
+            "step_id": step_id,
+            "prompt": prompt,
+            "cost": cost,
+            "currency": str(setting_value(db, "billing_currency")),
+        },
         model=model,
     ))
     db.commit()
@@ -44,14 +50,14 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
         agent = db.get(Agent, step.agent_id) if step.agent_id else None
         if agent is None:
             raise ValueError("The assigned agent no longer exists; edit the plan and retry.")
-        step.status = "running"
+        step.status = StepStatus.RUNNING.value
         step.started_at = datetime.now(timezone.utc)
         step.attempt_count += 1
         db.add(Event(
             task_id=task_id,
             event_type="step_status",
             message="An agent started a planned step.",
-            details={"step_id": step_id, "agent_id": agent.id, "status": "running"},
+            details={"step_id": step_id, "agent_id": agent.id, "status": StepStatus.RUNNING.value},
         ))
         db.commit()
 
@@ -146,7 +152,7 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
                 step_id=step_id,
             )
             output = response.content
-            _record_model_call(db, task_id, step_id, response.model, user_prompt, response.cost_usd)
+            _record_model_call(db, task_id, step_id, response.model, user_prompt, response.cost)
             verdict, validator_sources, validator_model, validator_prompt = await validate_draft(
                 db, task_id, step_id, task.instruction, output, tool_results
             )
@@ -171,13 +177,13 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
             {"document": source.document, "chunk_id": source.chunk_id, "content": source.content}
             for source in sources
         ]
-        step.status = "done"
+        step.status = StepStatus.DONE.value
         step.completed_at = datetime.now(timezone.utc)
         db.add(Event(
             task_id=task_id,
             event_type="step_status",
             message="An agent completed a planned step.",
-            details={"step_id": step_id, "agent_id": agent.id, "status": "done"},
+            details={"step_id": step_id, "agent_id": agent.id, "status": StepStatus.DONE.value},
         ))
         db.commit()
         return {
@@ -194,7 +200,7 @@ async def execute_task(task_id: str) -> None:
         task = db.get(Task, task_id)
         if task is None:
             return
-        if task.status in {"done", "awaiting_approval"}:
+        if task.status in {TaskStatus.DONE.value, TaskStatus.AWAITING_APPROVAL.value}:
             return
         try:
             if not task.plan:
@@ -216,7 +222,12 @@ async def execute_task(task_id: str) -> None:
                     task_id=task.id,
                     event_type="model_call",
                     message="The orchestrator plan request completed.",
-                    details={"step_id": None, "prompt": plan_prompt, "cost_usd": plan_cost},
+                    details={
+                        "step_id": None,
+                        "prompt": plan_prompt,
+                        "cost": plan_cost,
+                        "currency": str(setting_value(db, "billing_currency")),
+                    },
                     model=model,
                 ))
                 for index, item in enumerate(plan):
@@ -237,33 +248,37 @@ async def execute_task(task_id: str) -> None:
                         details={
                             "step_id": planned_step.id,
                             "agent_id": item["agent_id"],
-                            "status": "queued",
+                            "status": StepStatus.QUEUED.value,
                             "order_index": index,
                         },
                     ))
                 db.commit()
-            if task.status in {"planned", "failed", "rejected"}:
-                transition_task(db, task, "running", "Task execution started.")
+            if task.status in {
+                TaskStatus.PLANNED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.REJECTED.value,
+            }:
+                transition_task(db, task, TaskStatus.RUNNING, "Task execution started.")
                 db.commit()
 
             steps = db.scalars(
                 select(TaskStep).where(TaskStep.task_id == task_id).order_by(TaskStep.order_index)
             ).all()
             for step in steps:
-                if step.status == "running" or step.status == "waiting_capacity":
-                    step.status = "queued"
+                if step.status in {StepStatus.RUNNING.value, StepStatus.WAITING_CAPACITY.value}:
+                    step.status = StepStatus.QUEUED.value
             db.commit()
             context = dict(task.shared_context or {})
             completed = {
                 step.order_index: step
                 for step in steps
-                if step.status in {"done", "approved"}
+                if step.status in {StepStatus.DONE.value, StepStatus.APPROVED.value}
             }
             while len(completed) < len(steps):
                 ready = [
                     step for step in steps
                     if step.order_index not in completed
-                    and step.status in {"queued", "failed"}
+                    and step.status in {StepStatus.QUEUED.value, StepStatus.FAILED.value}
                     and all(dependency in completed for dependency in step.depends_on)
                 ]
                 if not ready:
@@ -292,7 +307,7 @@ async def execute_task(task_id: str) -> None:
                 db.commit()
 
             final_step = steps[-1]
-            final_step.status = "awaiting_approval"
+            final_step.status = StepStatus.AWAITING_APPROVAL.value
             db.add(Event(
                 task_id=task_id,
                 event_type="step_status",
@@ -300,10 +315,15 @@ async def execute_task(task_id: str) -> None:
                 details={
                     "step_id": final_step.id,
                     "agent_id": final_step.agent_id,
-                    "status": "awaiting_approval",
+                    "status": StepStatus.AWAITING_APPROVAL.value,
                 },
             ))
-            transition_task(db, task, "awaiting_approval", "Work completed and is waiting for human approval.")
+            transition_task(
+                db,
+                task,
+                TaskStatus.AWAITING_APPROVAL,
+                "Work completed and is waiting for human approval.",
+            )
             db.add(Event(
                 task_id=task_id,
                 event_type="approval_requested",
@@ -321,21 +341,21 @@ async def execute_task(task_id: str) -> None:
 
 def _record_task_failure(db: Session, task_id: str, error: Exception) -> None:
     task = db.get(Task, task_id)
-    if task is None or task.status in {"done", "rejected"}:
+    if task is None or task.status in {TaskStatus.DONE.value, TaskStatus.REJECTED.value}:
         return
     for step in db.scalars(select(TaskStep).where(
         TaskStep.task_id == task_id,
-        TaskStep.status.in_(("running", "waiting_capacity")),
+        TaskStep.status.in_((StepStatus.RUNNING.value, StepStatus.WAITING_CAPACITY.value)),
     )).all():
-        step.status = "failed"
+        step.status = StepStatus.FAILED.value
         db.add(Event(
             task_id=task_id,
             event_type="step_status",
             message="An agent step failed.",
-            details={"step_id": step.id, "agent_id": step.agent_id, "status": "failed"},
+            details={"step_id": step.id, "agent_id": step.agent_id, "status": StepStatus.FAILED.value},
         ))
-    if task.status != "failed":
-        transition_task(db, task, "failed", "Task execution failed.")
+    if task.status != TaskStatus.FAILED.value:
+        transition_task(db, task, TaskStatus.FAILED, "Task execution failed.")
     db.add(Event(
         task_id=task_id,
         event_type="task_error",

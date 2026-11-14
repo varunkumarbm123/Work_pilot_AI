@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from app.sales import import_sales_rows, parse_sales_csv, sales_summary
 from app.seed_import import import_seed_data
 from app.settings_store import setting_value, settings_map
 from app.state import InvalidTransition, transition_task
+from app.status import StepStatus, TaskStatus
 from app.workflow import execute_task
 
 
@@ -77,7 +79,11 @@ async def lifespan(app: FastAPI):
     app.state.background_tasks = set()
     with SessionLocal() as db:
         recoverable_ids = db.scalars(
-            select(Task.id).where(Task.status.in_(("planned", "running", "rejected")))
+            select(Task.id).where(
+                Task.status.in_(
+                    (TaskStatus.PLANNED.value, TaskStatus.RUNNING.value, TaskStatus.REJECTED.value)
+                )
+            )
         ).all()
     for task_id in recoverable_ids:
         _schedule_task(app, task_id)
@@ -229,10 +235,23 @@ def health(db: Session = Depends(get_db)):
             "database": "connected",
             "ai_configured": configured,
             "ai_provider": get_config().llm_provider,
+            "billing_currency": str(setting_value(db, "billing_currency")),
+            "status_codes": {
+                "task": {status.name.lower(): status.value for status in TaskStatus},
+                "step": {status.name.lower(): status.value for status in StepStatus},
+            },
             "cost_tracking_configured": all(
                 float(setting_value(db, key)) > 0
-                for key in ("input_cost_per_1k_usd", "output_cost_per_1k_usd", "embedding_cost_per_1k_usd")
-            ),
+                for key in (
+                    "input_cost_per_1k_tokens",
+                    "output_cost_per_1k_tokens",
+                    *(
+                        ("embedding_cost_per_1k_tokens",)
+                        if provider_supports_embeddings()
+                        else ()
+                    ),
+                )
+            ) and bool(str(setting_value(db, "billing_currency")).strip()),
             "connector": connector.name,
         }
 
@@ -327,7 +346,7 @@ async def create_task(
         shared_context["agent_filter"] = [agent.id]
     task = Task(
         instruction=payload.instruction.strip(),
-        status="planned",
+        status=TaskStatus.PLANNED.value,
         session_id=session_id,
         shared_context=shared_context,
     )
@@ -339,7 +358,7 @@ async def create_task(
         message="A task was queued from the Control Hub instruction.",
         details={
             "instruction": task.instruction,
-            "status": "planned",
+            "status": TaskStatus.PLANNED.value,
             "agent_filter": shared_context.get("agent_filter", []),
         },
     ))
@@ -353,7 +372,7 @@ async def create_task(
         task_id=task.id,
         event_type="state_transition",
         message="Task created in the planned state.",
-        details={"from": None, "to": "planned"},
+        details={"from": None, "to": TaskStatus.PLANNED.value},
     ))
     db.commit()
     _schedule_task(app, task.id)
@@ -380,7 +399,7 @@ def retry_task(task_id: str, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if task.status != "failed":
+    if task.status != TaskStatus.FAILED.value:
         raise HTTPException(status_code=409, detail="Only failed tasks can be retried.")
     db.add(Event(task_id=task.id, event_type="retry_requested", message="A reviewer retried the failed task."))
     db.commit()
@@ -391,7 +410,7 @@ def retry_task(task_id: str, db: Session = Depends(get_db)):
 @app.get("/api/approvals")
 def list_approvals(db: Session = Depends(get_db)):
     tasks = db.scalars(
-        select(Task).where(Task.status == "awaiting_approval").order_by(Task.updated_at.desc())
+        select(Task).where(Task.status == TaskStatus.AWAITING_APPROVAL.value).order_by(Task.updated_at.desc())
     ).all()
     return [_task_dict(db, task) for task in tasks]
 
@@ -401,12 +420,12 @@ def review_task(task_id: str, payload: ApprovalInput, db: Session = Depends(get_
     task = db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if task.status != "awaiting_approval":
+    if task.status != TaskStatus.AWAITING_APPROVAL.value:
         raise HTTPException(status_code=409, detail="This task is not awaiting approval.")
     step = db.scalar(
         select(TaskStep).where(
             TaskStep.task_id == task_id,
-            TaskStep.status == "awaiting_approval",
+            TaskStep.status == StepStatus.AWAITING_APPROVAL.value,
         )
     )
     if step is None:
@@ -420,21 +439,29 @@ def review_task(task_id: str, payload: ApprovalInput, db: Session = Depends(get_
         feedback[step.id] = reason
         context["review_feedback"] = feedback
         task.shared_context = context
-        step.status = "queued"
+        step.status = StepStatus.QUEUED.value
         step.completed_at = None
         db.add(Event(
             task_id=task.id,
             event_type="step_status",
             message="The reviewer rejected the draft.",
-            details={"step_id": step.id, "agent_id": step.agent_id, "status": "rejected"},
+            details={
+                "step_id": step.id,
+                "agent_id": step.agent_id,
+                "status": StepStatus.REJECTED.value,
+            },
         ))
         db.add(Event(
             task_id=task.id,
             event_type="step_status",
             message="The rejected draft was queued for regeneration.",
-            details={"step_id": step.id, "agent_id": step.agent_id, "status": "queued"},
+            details={
+                "step_id": step.id,
+                "agent_id": step.agent_id,
+                "status": StepStatus.QUEUED.value,
+            },
         ))
-        transition_task(db, task, "rejected", "Reviewer rejected the draft.")
+        transition_task(db, task, TaskStatus.REJECTED, "Reviewer rejected the draft.")
         db.add(Event(
             task_id=task.id,
             event_type="approval_review",
@@ -458,14 +485,18 @@ def review_task(task_id: str, payload: ApprovalInput, db: Session = Depends(get_
     edited = payload.action == "edit_approve"
     if edited:
         step.output = content
-    step.status = "approved"
+    step.status = StepStatus.APPROVED.value
     db.add(Event(
         task_id=task.id,
         event_type="step_status",
         message="The final agent draft was approved.",
-        details={"step_id": step.id, "agent_id": step.agent_id, "status": "approved"},
+        details={
+            "step_id": step.id,
+            "agent_id": step.agent_id,
+            "status": StepStatus.APPROVED.value,
+        },
     ))
-    transition_task(db, task, "approved", "Reviewer approved the draft.")
+    transition_task(db, task, TaskStatus.APPROVED, "Reviewer approved the draft.")
     db.add(Event(
         task_id=task.id,
         event_type="approval_review",
@@ -478,9 +509,9 @@ def review_task(task_id: str, payload: ApprovalInput, db: Session = Depends(get_
         item_type="approved_work",
         adapter=connector.name,
     ))
-    transition_task(db, task, "done", "Approved work was published to the active connector.")
+    transition_task(db, task, TaskStatus.DONE, "Approved work was published to the active connector.")
     db.commit()
-    return {"status": "done", "adapter": connector.name}
+    return {"status": TaskStatus.DONE.value, "adapter": connector.name}
 
 
 @app.get("/api/events")
@@ -530,7 +561,11 @@ async def stream_task_events(task_id: str, request: Request):
                         "events": [_event_dict(event) for event in fresh],
                     }
                     yield f"event: update\ndata: {json.dumps(jsonable_encoder(payload), ensure_ascii=False)}\n\n"
-                if task.status in {"done", "failed", "rejected"}:
+                if task.status in {
+                    TaskStatus.DONE.value,
+                    TaskStatus.FAILED.value,
+                    TaskStatus.REJECTED.value,
+                }:
                     return
             yield ": keep-alive\n\n"
             await asyncio.sleep(1)
@@ -711,6 +746,8 @@ async def update_setting(
         valid = isinstance(value, str)
     if not valid:
         raise HTTPException(status_code=422, detail=f"Setting '{key}' requires the same JSON value type.")
+    if key == "billing_currency" and value and not re.fullmatch(r"[A-Z]{3}", value):
+        raise HTTPException(status_code=422, detail="Enter a three-letter uppercase billing currency code.")
     if key == "embedding_model_name" and not provider_supports_embeddings():
         raise HTTPException(
             status_code=409,
@@ -775,13 +812,17 @@ def dashboard(db: Session = Depends(get_db)):
     edits = 0
     for event in events:
         if event.event_type == "task_created" and event.task_id:
-            status_by_task[event.task_id] = "planned"
+            status_by_task[event.task_id] = TaskStatus.PLANNED.value
             created_at[event.task_id] = event.created_at
         elif event.event_type == "state_transition" and event.task_id:
             status = (event.details or {}).get("to")
             if status:
                 status_by_task[event.task_id] = status
-                if status in {"done", "failed", "rejected"}:
+                if status in {
+                    TaskStatus.DONE.value,
+                    TaskStatus.FAILED.value,
+                    TaskStatus.REJECTED.value,
+                }:
                     terminal_time[event.task_id] = event.created_at
         elif event.event_type == "step_status":
             details = event.details or {}
@@ -796,7 +837,10 @@ def dashboard(db: Session = Depends(get_db)):
     statuses: dict[str, int] = {}
     for status in status_by_task.values():
         statuses[status] = statuses.get(status, 0) + 1
-    terminal = statuses.get("done", 0) + statuses.get("failed", 0) + statuses.get("rejected", 0)
+    terminal = sum(
+        statuses.get(status.value, 0)
+        for status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED)
+    )
     durations = [
         (terminal_time[task_id] - start).total_seconds()
         for task_id, start in created_at.items()
@@ -810,7 +854,7 @@ def dashboard(db: Session = Depends(get_db)):
     return {
         "task_status_counts": statuses,
         "total_tasks": len(status_by_task),
-        "success_rate": statuses.get("done", 0) / terminal if terminal else 0,
+        "success_rate": statuses.get(TaskStatus.DONE.value, 0) / terminal if terminal else 0,
         "average_duration_seconds": sum(durations) / len(durations) if durations else None,
         "approval_count": approvals,
         "edit_rate": edits / approvals if approvals else 0,

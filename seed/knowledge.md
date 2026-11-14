@@ -1,6 +1,6 @@
 # Sample business policy
 
-Sample policy for the WorkPilot AI demonstration business. This is sample content, not a real company's policy.
+Sample policy text for demonstration; it is not operational business policy.
 
 Customers may request a return within 30 days when they can provide proof of purchase and the item is unused. Final eligibility decisions must be reviewed by a team member. Refunds are issued to the original payment method after approval.
 

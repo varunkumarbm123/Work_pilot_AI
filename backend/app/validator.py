@@ -77,7 +77,8 @@ async def validate_draft(
             "verdict": verdict,
             "prompt": prompt,
             "policy_sources": policy,
-            "cost_usd": response.cost_usd,
+            "cost": response.cost,
+            "currency": str(setting_value(db, "billing_currency")),
         },
         model=response.model,
     ))
