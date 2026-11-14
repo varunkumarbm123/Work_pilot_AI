@@ -25,7 +25,7 @@ async def validate_draft(
         {"document": source.document, "chunk_id": source.chunk_id, "text": source.content}
         for source in policy_sources
     ]
-    policy_guidance = str(setting_value(db, "validation_policy", ""))
+    policy_guidance = str(setting_value(db, "validation_policy"))
     prompt = (
         "Evaluate the provided draft against the retrieved policy evidence and task context. "
         "Do not apply rules that are not in the supplied guidance or evidence. "
@@ -33,7 +33,7 @@ async def validate_draft(
         "Return JSON with exactly: 'valid' (boolean), 'requires_human_review' (boolean), "
         "'reasons' (array of strings), and 'policy_citations' (array of objects with "
         "'document' and 'chunk_id' copied from the supplied evidence). "
-        f"\n\nGuidance:\n{policy_guidance}\n\nInstruction:\n{instruction}"
+        f"\n\nInstruction:\n{instruction}"
         f"\n\nDraft:\n{draft}\n\nRetrieved policy evidence:\n{json.dumps(policy, ensure_ascii=False)}"
         f"\n\nDatabase/tool evidence for numeric and enquiry claims:\n"
         f"{json.dumps(business_evidence or {}, ensure_ascii=False)}"
@@ -41,7 +41,7 @@ async def validate_draft(
     )
     response = await complete(
         db,
-        [{"role": "system", "content": "Return a careful, evidence-based validation verdict."},
+        [{"role": "system", "content": policy_guidance},
          {"role": "user", "content": prompt}],
         json_mode=True,
         task_id=task_id,

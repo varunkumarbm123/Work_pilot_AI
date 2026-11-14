@@ -26,16 +26,16 @@ class ModelRequestError(RuntimeError):
 
 
 def _request_settings(db: Session) -> tuple[int, float]:
-    retries = max(0, min(int(setting_value(db, "retry_limit", 2)), 10))
-    timeout = max(1.0, min(float(setting_value(db, "request_timeout_seconds", 45)), 180.0))
+    retries = max(0, min(int(setting_value(db, "retry_limit")), 10))
+    timeout = max(1.0, min(float(setting_value(db, "request_timeout_seconds")), 180.0))
     return retries, timeout
 
 
 def _model_and_cost(db: Session, response: dict[str, Any]) -> tuple[str, float]:
-    model = str(response.get("model") or setting_value(db, "model_name", get_config().openai_model))
+    model = str(response.get("model") or setting_value(db, "model_name"))
     usage = response.get("usage") or {}
-    prompt_rate = float(setting_value(db, "input_cost_per_1k_usd", 0.0))
-    completion_rate = float(setting_value(db, "output_cost_per_1k_usd", 0.0))
+    prompt_rate = float(setting_value(db, "input_cost_per_1k_usd"))
+    completion_rate = float(setting_value(db, "output_cost_per_1k_usd"))
     cost = int(usage.get("prompt_tokens", 0)) * prompt_rate / 1000
     cost += int(usage.get("completion_tokens", 0)) * completion_rate / 1000
     return model, cost
@@ -52,7 +52,7 @@ def _check_model_cost_cap(
     if not session_id:
         return
     spend = session_spend(db, session_id)
-    cap = float(setting_value(db, "cost_cap_usd_per_session", 2.0))
+    cap = float(setting_value(db, "cost_cap_usd_per_session"))
     if spend >= cap:
         raise ModelRequestError(
             "The browser session reached its configured model cost cap; adjust Settings or start a new session."
@@ -134,11 +134,11 @@ async def complete(
 ) -> ModelResponse:
     config = get_config()
     _check_model_cost_cap(db, task_id)
-    model = str(setting_value(db, "model_name", config.openai_model))
+    model = str(setting_value(db, "model_name"))
     if not model:
         raise ModelRequestError("Configure a chat model in Settings or OPENAI_MODEL.")
     payload: dict[str, Any] = {"model": model, "messages": messages}
-    payload["max_completion_tokens"] = int(setting_value(db, "max_completion_tokens", 1200))
+    payload["max_completion_tokens"] = int(setting_value(db, "max_completion_tokens"))
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     response = await _post_with_retry(db, "chat/completions", payload, task_id, step_id)
@@ -158,7 +158,7 @@ async def embed(
 ) -> list[float]:
     config = get_config()
     _check_model_cost_cap(db, task_id, session_id)
-    model = str(setting_value(db, "embedding_model_name", config.openai_embedding_model))
+    model = str(setting_value(db, "embedding_model_name"))
     if not model:
         raise ModelRequestError("Configure an embedding model in Settings or OPENAI_EMBEDDING_MODEL.")
     response = await _post_with_retry(
@@ -168,7 +168,7 @@ async def embed(
     if not data or not data[0].get("embedding"):
         raise ModelRequestError("Model provider returned no embedding.")
     usage = response.get("usage") or {}
-    token_rate = float(setting_value(db, "embedding_cost_per_1k_usd", 0.0))
+    token_rate = float(setting_value(db, "embedding_cost_per_1k_usd"))
     cost = int(usage.get("prompt_tokens", 0)) * token_rate / 1000
     db.add(Event(
         task_id=task_id,

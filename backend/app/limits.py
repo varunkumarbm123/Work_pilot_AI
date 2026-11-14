@@ -24,7 +24,7 @@ def reserve_session_request(db: Session, session_id: str) -> None:
             Event.event_type == "session_request", session_match
         )
     ) or 0
-    cap = int(setting_value(db, "request_cap_per_session", 20))
+    cap = int(setting_value(db, "request_cap_per_session"))
     if total >= cap:
         raise HTTPException(status_code=429, detail="This browser session reached its configured request cap.")
     recent = db.scalar(
@@ -34,11 +34,11 @@ def reserve_session_request(db: Session, session_id: str) -> None:
             Event.created_at >= datetime.now(timezone.utc) - timedelta(minutes=1),
         )
     ) or 0
-    rate = int(setting_value(db, "rate_limit_per_minute", 10))
+    rate = int(setting_value(db, "rate_limit_per_minute"))
     if recent >= rate:
         raise HTTPException(status_code=429, detail="This browser session is temporarily rate limited.")
     spend = session_spend(db, session_id)
-    cost_cap = float(setting_value(db, "cost_cap_usd_per_session", 2.0))
+    cost_cap = float(setting_value(db, "cost_cap_usd_per_session"))
     if spend >= cost_cap:
         raise HTTPException(status_code=429, detail="This browser session reached its configured model cost cap.")
     db.add(Event(

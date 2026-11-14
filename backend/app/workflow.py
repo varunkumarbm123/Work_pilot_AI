@@ -116,7 +116,7 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
             ))
             db.commit()
 
-        retry_limit = max(0, min(int(setting_value(db, "retry_limit", 2)), 10))
+        retry_limit = max(0, min(int(setting_value(db, "retry_limit")), 10))
         feedback: list[str] = []
         verdict: dict = {}
         output = ""
@@ -133,7 +133,7 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
                 "Do not invent policies, facts, or numeric results. Cite knowledge sources by document "
                 "and chunk ID. Return the draft only; no external action is authorized."
             )
-            system_prompt = str(setting_value(db, "system_prompt", ""))
+            system_prompt = str(setting_value(db, "system_prompt"))
             system_prompt += (
                 f"\n\nAgent name: {agent.name}\nRole: {agent.role}\n"
                 f"Agent instructions: {agent.instructions}\n"

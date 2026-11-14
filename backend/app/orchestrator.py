@@ -39,8 +39,8 @@ async def create_plan(
         }
         for agent in agents
     ]
-    max_steps = max(1, min(int(setting_value(db, "max_task_steps", 6)), 20))
-    system_prompt = str(setting_value(db, "system_prompt", ""))
+    max_steps = max(1, min(int(setting_value(db, "max_task_steps")), 20))
+    system_prompt = str(setting_value(db, "system_prompt"))
     prompt = (
         "Create a dependency-ordered execution plan for the user's instruction. "
         "Use the supplied agent profiles to select an agent for each step at runtime. "

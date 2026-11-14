@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -201,7 +201,7 @@ def _check_session_caps(db: Session, session_id: str) -> None:
     task_count = db.scalar(
         select(func.count()).select_from(Task).where(Task.session_id == session_id)
     ) or 0
-    request_cap = int(setting_value(db, "request_cap_per_session", 20))
+    request_cap = int(setting_value(db, "request_cap_per_session"))
     if task_count >= request_cap:
         raise HTTPException(status_code=429, detail="This browser session reached its task request cap.")
 
@@ -218,7 +218,7 @@ def health(db: Session = Depends(get_db)):
         )
         connector = get_connector(get_config())
     except ValueError as error:
-        raise HTTPException(status_code=503, detail=f"Connector configuration is invalid: {error}") from error
+        raise HTTPException(status_code=503, detail=f"Runtime configuration is invalid: {error}") from error
     except SQLAlchemyError as error:
         raise HTTPException(status_code=503, detail=f"Database is unavailable: {error}") from error
     return {
@@ -226,7 +226,7 @@ def health(db: Session = Depends(get_db)):
             "database": "connected",
             "ai_configured": configured,
             "cost_tracking_configured": all(
-                float(setting_value(db, key, 0.0)) > 0
+                float(setting_value(db, key)) > 0
                 for key in ("input_cost_per_1k_usd", "output_cost_per_1k_usd", "embedding_cost_per_1k_usd")
             ),
             "connector": connector.name,
@@ -465,8 +465,25 @@ def review_task(task_id: str, payload: ApprovalInput, db: Session = Depends(get_
 
 
 @app.get("/api/events")
-def list_events(task_id: str | None = None, limit: int = 100, db: Session = Depends(get_db)):
-    statement = select(Event).order_by(Event.created_at.desc()).limit(max(1, min(limit, 500)))
+def list_events(
+    task_id: str | None = None,
+    limit: int = 100,
+    x_session_id: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    session_id = _session_id(x_session_id)
+    session_task_ids = select(Task.id).where(Task.session_id == session_id)
+    statement = (
+        select(Event)
+        .where(
+            or_(
+                Event.task_id.in_(session_task_ids),
+                Event.details["session_id"].as_string() == session_id,
+            )
+        )
+        .order_by(Event.created_at.desc())
+        .limit(max(1, min(limit, 500)))
+    )
     if task_id:
         statement = statement.where(Event.task_id == task_id)
     events = db.scalars(statement).all()

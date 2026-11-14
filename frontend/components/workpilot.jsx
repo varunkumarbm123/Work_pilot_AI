@@ -688,18 +688,18 @@ function ActivityLog({ api }) {
   useEffect(() => { load(); const timer = setInterval(load, 5000); return () => clearInterval(timer); }, [load]);
   return (
     <>
-      <PageIntro eyebrow="AUDITABLE WORK" title="Every step leaves a trace." description="See instructions, model prompts, plans, retrievals, data-tool results, validation decisions, and human reviews." />
+      <PageIntro eyebrow="AUDITABLE WORK" title="Every step leaves a trace." description="See instructions, model prompts, plans, retrievals, data-tool results, validation decisions, and human reviews from this browser session." />
       <Panel title="Filter activity" eyebrow="EVENT STREAM">
-        <div className="filter-row"><input value={taskId} onChange={(event) => setTaskId(event.target.value)} aria-label="Task identifier filter" /><button className="button button-secondary" onClick={load}>Refresh events</button></div>
+        <div className="filter-row"><input value={taskId} onChange={(event) => setTaskId(event.target.value)} placeholder="Filter by task ID" aria-label="Task identifier filter" /><button className="button button-secondary" onClick={load}>Refresh events</button></div>
       </Panel>
       <ErrorNote error={error} onRetry={load} />
-      <Panel title="Recorded events" eyebrow={`${events.length} LATEST EVENTS`}>
-        {!events.length && !error && <Empty>Workspace events will appear here after your first interaction.</Empty>}
+      <Panel title="Recorded events" eyebrow={`${events.length} EVENTS · THIS SESSION`}>
+        {!events.length && !error && <Empty>Events from this browser session will appear here after your first interaction.</Empty>}
         <div className="timeline">{events.map((event) => <article className="timeline-event" key={event.id}>
           <span className="timeline-dot" /><div className="timeline-content">
             <div className="timeline-top"><strong>{event.message}</strong><time>{formatTime(event.created_at)}</time></div>
             <div className="event-meta">{event.event_type}{event.model && ` · ${event.model}`}{event.task_id && ` · task ${event.task_id.slice(0, 8)}`}</div>
-            {!!Object.keys(event.details || {}).length && <details><summary>Inspect event details and prompt</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>}
+            {!!Object.keys(event.details || {}).length && <details><summary>{event.details.prompt ? "Inspect event details and prompt" : "Inspect event details"}</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>}
           </div>
         </article>)}</div>
       </Panel>

@@ -4,9 +4,16 @@ from sqlalchemy.orm import Session
 from app.models import Setting
 
 
-def setting_value(db: Session, key: str, default: object = None) -> object:
+_MISSING = object()
+
+
+def setting_value(db: Session, key: str, default: object = _MISSING) -> object:
     setting = db.get(Setting, key)
-    return setting.value if setting is not None else default
+    if setting is not None:
+        return setting.value
+    if default is not _MISSING:
+        return default
+    raise ValueError(f"Required setting '{key}' is missing; rerun the seed import or configure it in Settings.")
 
 
 def upsert_setting(db: Session, key: str, value: object, description: str = "") -> Setting:

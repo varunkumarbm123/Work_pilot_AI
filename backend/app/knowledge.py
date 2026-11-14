@@ -38,7 +38,7 @@ async def ingest_document(
     step_id: str | None = None,
     session_id: str | None = None,
 ) -> Document:
-    chunk_size = max(100, min(int(setting_value(db, "chunk_size", 900)), 8000))
+    chunk_size = max(100, min(int(setting_value(db, "chunk_size")), 8000))
     chunks = [text[index : index + chunk_size] for index in range(0, len(text), chunk_size)]
     document = Document(name=name, content_type=content_type)
     db.add(document)
@@ -63,7 +63,7 @@ async def retrieve(
     step_id: str | None = None,
 ) -> list[RetrievedSource]:
     vector = await embed(db, query, task_id=task_id, step_id=step_id)
-    count = top_k or int(setting_value(db, "top_k", 4))
+    count = int(setting_value(db, "top_k")) if top_k is None else top_k
     count = max(1, min(count, 20))
     distance = KnowledgeChunk.embedding.cosine_distance(vector)
     rows = db.execute(

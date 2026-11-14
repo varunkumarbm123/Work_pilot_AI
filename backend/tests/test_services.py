@@ -1,9 +1,14 @@
 import unittest
 from pathlib import Path
 
+from fastapi import HTTPException
+from sqlalchemy.dialects import postgresql
+
 from app.knowledge import extract_text
+from app.main import list_events
 from app.models import Task
 from app.sales import parse_sales_csv
+from app.settings_store import setting_value
 from app.state import InvalidTransition, transition_task
 
 
@@ -16,6 +21,66 @@ class RecordingSession:
 
     def add(self, value):
         self.added.append(value)
+
+
+class SettingRecord:
+    def __init__(self, value):
+        self.value = value
+
+
+class SettingsTests(unittest.TestCase):
+    def test_existing_setting_is_returned(self):
+        class FakeSession:
+            def get(self, model, key):
+                return SettingRecord("configured") if key == "system_prompt" else None
+
+        self.assertEqual(setting_value(FakeSession(), "system_prompt"), "configured")
+
+    def test_missing_required_setting_raises(self):
+        class FakeSession:
+            def get(self, model, key):
+                return None
+
+        with self.assertRaisesRegex(ValueError, "system_prompt"):
+            setting_value(FakeSession(), "system_prompt")
+
+    def test_optional_setting_default_is_explicit(self):
+        class FakeSession:
+            def get(self, model, key):
+                return None
+
+        self.assertEqual(setting_value(FakeSession(), "example_instructions", []), [])
+
+
+class ActivityScopeTests(unittest.TestCase):
+    def test_activity_query_is_limited_to_the_browser_session(self):
+        class EmptyResult:
+            def all(self):
+                return []
+
+        class RecordingSession:
+            statement = None
+
+            def scalars(self, statement):
+                self.statement = statement
+                return EmptyResult()
+
+        db = RecordingSession()
+        self.assertEqual(list_events(x_session_id="current-session", db=db), [])
+        compiled = db.statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+        self.assertIn("tasks.session_id", sql)
+        self.assertIn("events.details", sql)
+        self.assertIn("current-session", compiled.params.values())
+
+    def test_activity_query_requires_a_session_identifier(self):
+        class RecordingSession:
+            def scalars(self, statement):
+                raise AssertionError("A query must not run without a session identifier.")
+
+        with self.assertRaises(HTTPException) as error:
+            list_events(x_session_id=None, db=RecordingSession())
+        self.assertEqual(error.exception.status_code, 400)
 
 
 class IngestionTests(unittest.TestCase):
