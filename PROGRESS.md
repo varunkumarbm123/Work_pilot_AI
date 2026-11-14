@@ -65,13 +65,14 @@
 - **Known issues:** GitHub CLI is not authenticated in this workspace, so the tested changes are local and have not triggered a Render deployment. The exposed provider key is revoked but has not been replaced; live task execution and full approval acceptance remain blocked until a replacement key and provider credits are configured.
 
 ## Activity feed session scoping
-- **Status:** Implemented locally; deployment pending.
+- **Status:** Implemented, pushed, and live.
 - **Changes:** The Activity Log API now requires the browser session ID and only returns task-linked or explicitly session-tagged events for that session. The UI labels the feed as session-scoped, clarifies its empty state, adds a task-ID placeholder, and only says “prompt” for events that include one.
 - **Files changed:** `backend/app/main.py`, `backend/tests/test_services.py`, `frontend/components/workpilot.jsx`, `README.md`, `PROGRESS.md`.
 - **Validation:** Ten backend unit tests passed, including session-filter SQL and required-session checks; Python compilation and API import passed; the Next.js production build passed. Live event isolation is not yet deployed.
-- **Deployment change:** Removed the revoked OpenAI key from the Render environment group; Render confirmed an automatic deploy was triggered. The replacement key still needs to be added directly in Render.
-- **Next:** Publish source changes and verify both Render and Vercel deployments, then test the session-scoped feed in the deployed site.
-- **Known issues:** Render's key-removal deployment has been triggered but not yet verified. A replacement provider key must be entered directly in Render before AI tasks can succeed; environment-variable presence alone does not confirm that provider credentials are valid.
+- **Deployment change:** Commit `fa7dff9` was pushed to `main`. Removed the revoked OpenAI key from the Render environment group.
+- **Live verification:** Render `/health` reports database connected and `ai_configured:false`; `/api/events` rejects calls without a session ID. The deployed frontend displays “EVENTS · THIS SESSION,” a task-ID filter placeholder, and “Inspect event details” for events without prompts.
+- **Next:** Add a fresh OpenAI API key directly in Render and ensure the provider account has credits, then re-run a task end to end.
+- **Known issues:** AI tasks are intentionally unavailable until a valid provider key and credits are configured. Seed/sample records remain in the database as sample data per product requirements; the Activity Log no longer mixes unrelated browser-session events into its feed.
 
 ## Deployment continuation
 - **Status:** Frontend and database-backed API deployed publicly; OpenAI is configured but account billing blocks model execution.
