@@ -51,6 +51,10 @@ async def create_plan(
         "(array of integer indices of prerequisite steps; only earlier indices are valid), "
         "and 'is_final' (boolean). Exactly one final step must be last and synthesize all required "
         "work; it must depend on every earlier step. Independent non-final steps should have no dependency. "
+        "Choose tools based on the information each step needs, not only on what the agent can do. "
+        "When an allowed tool is necessary to obtain current data or evidence, include it in that step's "
+        "'tools' array. Any tool required for correctness must be listed; do not expect an agent to infer "
+        "that a tool should be used later, and do not select unrelated tools. "
         f"Create between 1 and {max_steps} steps."
         f"\n\nUser instruction:\n{instruction}\n\nAgent profiles:\n{json.dumps(agent_options, ensure_ascii=False)}"
     )

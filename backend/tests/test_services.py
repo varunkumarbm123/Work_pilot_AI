@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
@@ -20,6 +20,7 @@ from app.llm import (
 )
 from app.main import list_events
 from app.models import Task
+from app.orchestrator import create_plan
 from app.sales import parse_sales_csv
 from app.settings_store import setting_value
 from app.state import InvalidTransition, transition_task
@@ -239,6 +240,49 @@ class StateMachineTests(unittest.TestCase):
 
         self.assertEqual(task.status, "done")
         self.assertEqual(db.added, [])
+
+
+class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plan_prompt_requires_tools_needed_for_correctness(self):
+        agent = SimpleNamespace(
+            id="sales-agent",
+            name="Sales Analyst",
+            role="Analyze uploaded sales data.",
+            instructions="Use the sales data tool for every numeric claim.",
+            allowed_tools=["sales_summary"],
+            knowledge_access=False,
+        )
+
+        class FakeResult:
+            def all(self):
+                return [agent]
+
+        class FakeSession:
+            def scalars(self, statement):
+                return FakeResult()
+
+        model_response = SimpleNamespace(
+            content=(
+                '{"steps":[{"description":"Analyze sales data","agent_id":"sales-agent",'
+                '"tools":["sales_summary"],"depends_on":[],"is_final":true}]}'
+            ),
+            model="test-model",
+            cost_usd=0,
+        )
+        with (
+            patch(
+                "app.orchestrator.setting_value",
+                side_effect=lambda db, key: {"max_task_steps": 6, "system_prompt": "Base prompt"}[key],
+            ),
+            patch("app.orchestrator.complete", new_callable=AsyncMock) as complete,
+        ):
+            complete.return_value = model_response
+            plan, _, _, _, _ = await create_plan(FakeSession(), "Analyze sales.", "task-id")
+
+        prompt = complete.await_args.args[1][1]["content"]
+        self.assertIn("Any tool required for correctness must be listed", prompt)
+        self.assertIn('"sales_summary"', prompt)
+        self.assertEqual(plan[0]["tools"], ["sales_summary"])
 
 
 if __name__ == "__main__":
