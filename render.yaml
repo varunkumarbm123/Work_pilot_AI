@@ -4,12 +4,48 @@ services:
     runtime: python
     plan: free
     buildCommand: python -m pip install -r backend/requirements.txt
-    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+    startCommand: cd backend && alembic -c alembic.ini upgrade head && python -m app.seed_import && uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: LLM_PROVIDER
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: OPENAI_EMBEDDING_MODEL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_BASE_URL
+        sync: false
+      - key: GEMINI_MODEL
+        sync: false
+      - key: GEMINI_EMBEDDING_MODEL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_BASE_URL
+        sync: false
+      - key: GROQ_MODEL
+        sync: false
       - key: FRONTEND_ORIGINS
         sync: false
+      - key: CONNECTOR_ADAPTER
+        value: sample
       - key: SEED_ON_STARTUP
         value: true
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false

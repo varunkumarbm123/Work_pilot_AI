@@ -1,3 +1,18 @@
 [
-  {"key": "chunk_size", "value": 900, "description": "Maximum character count for each knowledge chunk."}
+  {"key": "system_prompt", "value": "You are a careful business-workflow assistant. Follow the assigned agent instructions. Use only provided context and tools, distinguish evidence from inference, and request human review for external actions.", "description": "Base instructions applied to model calls."},
+  {"key": "validation_policy", "value": "Check factual support, citation quality, consistency with retrieved policies, privacy, and whether the draft requires human approval. Return a structured verdict with reasons.", "description": "Guidance for LLM validation; supporting policy text is retrieved at runtime."},
+  {"key": "retry_limit", "value": 2, "description": "Maximum retries for rate-limited or transient model calls."},
+  {"key": "request_timeout_seconds", "value": 45, "description": "Timeout applied to model and embedding requests."},
+  {"key": "chunk_size", "value": 900, "description": "Knowledge chunk size in characters."},
+  {"key": "top_k", "value": 4, "description": "Maximum retrieved knowledge chunks per request."},
+  {"key": "request_cap_per_session", "value": 20, "description": "Maximum tasks created by a browser session."},
+  {"key": "cost_cap_usd_per_session", "value": 2.0, "description": "Maximum tracked model spend per browser session."},
+  {"key": "rate_limit_per_minute", "value": 10, "description": "Maximum task creation requests per session per minute."},
+  {"key": "max_task_steps", "value": 6, "description": "Maximum steps accepted in an orchestrated plan."},
+  {"key": "model_name", "value": "", "description": "Chat model name used by the orchestrator and agents."},
+  {"key": "embedding_model_name", "value": "", "description": "Embedding model name used for knowledge retrieval."},
+  {"key": "input_cost_per_1k_usd", "value": 0.0, "description": "Provider input-token price in USD per 1,000 tokens."},
+  {"key": "output_cost_per_1k_usd", "value": 0.0, "description": "Provider output-token price in USD per 1,000 tokens."},
+  {"key": "embedding_cost_per_1k_usd", "value": 0.0, "description": "Provider embedding-token price in USD per 1,000 tokens."},
+  {"key": "max_completion_tokens", "value": 1200, "description": "Maximum output tokens allowed for each model completion request."}
 ]
