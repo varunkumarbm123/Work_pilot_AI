@@ -74,6 +74,15 @@
 - **Next:** Add a fresh OpenAI API key directly in Render and ensure the provider account has credits, then re-run a task end to end.
 - **Known issues:** AI tasks are intentionally unavailable until a valid provider key and credits are configured. Seed/sample records remain in the database as sample data per product requirements; the Activity Log no longer mixes unrelated browser-session events into its feed.
 
+## Gemini free-tier provider
+- **Status:** Gemini provider support implemented and validated locally; deployment and provider-key verification pending.
+- **Changes:** Added provider selection and server-only Gemini API settings. Chat uses Google's OpenAI-compatible Gemini endpoint; embeddings use Gemini's native `embedContent` API. Existing retry/capacity logging, timeout, model pricing accounting, Settings-based model names, and embedding reindex path are preserved. Render config now selects Gemini and includes the API base and model identifiers; no key is committed.
+- **Files changed:** `.env.example`, `render.yaml`, `backend/app/{config.py,llm.py,main.py,seed_import.py}`, `backend/tests/test_services.py`, `README.md`, `PROGRESS.md`.
+- **Models:** `gemini-4-hydrogen` for chat and `gemini-embedding-001` for embeddings, initially configured via Render environment variables; chat and embedding model names are also stored in database Settings.
+- **Validation:** 14 backend tests passed, including Gemini chat/embedding request and response mapping; Python compilation and frontend production build passed.
+- **Next:** Deploy source and set `LLM_PROVIDER`, Gemini base/model settings in Render; obtain a Gemini API key in AI Studio and store it only in Render `GEMINI_API_KEY`. Update DB chat model and embedding model settings, causing stored document embeddings to be reindexed, then verify live AI task and approval flow.
+- **Known issues:** AI Studio is currently at its onboarding page (no signed-in account); the provider secret cannot be created until the user signs into Google AI Studio. Free-tier quotas are provider-controlled and may change.
+
 ## Deployment continuation
 - **Status:** Frontend and database-backed API deployed publicly; OpenAI is configured but account billing blocks model execution.
 - **Completed:** Confirmed the repository is on the GitHub `main` branch; connected Render Blueprint `Zen_AI` to the repository; created Render web service `workpilot-ai-api` with public origin `https://workpilot-ai-api.onrender.com`; created Neon project `workpilot-ai` in Sydney; created Vercel project `work-pilot-ai` from the `frontend/` root and set `NEXT_PUBLIC_API_BASE_URL` to the Render service origin.

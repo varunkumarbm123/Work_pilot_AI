@@ -9,6 +9,8 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: LLM_PROVIDER
+        value: gemini
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_BASE_URL
@@ -17,6 +19,14 @@ services:
         sync: false
       - key: OPENAI_EMBEDDING_MODEL
         sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta
+      - key: GEMINI_MODEL
+        value: gemini-4-hydrogen
+      - key: GEMINI_EMBEDDING_MODEL
+        value: gemini-embedding-001
       - key: FRONTEND_ORIGINS
         sync: false
       - key: CONNECTOR_ADAPTER

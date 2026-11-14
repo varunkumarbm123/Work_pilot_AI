@@ -21,7 +21,7 @@ from app.database import SessionLocal, engine
 from app.enquiries import create_enquiry
 from app.knowledge import extract_text, ingest_document
 from app.limits import reserve_session_request
-from app.llm import ModelRequestError, embed
+from app.llm import ModelRequestError, embed, provider_is_configured
 from app.migrate import run_migrations
 from app.models import Agent, Document, Enquiry, Event, KnowledgeChunk, SentItem, Setting, Task, TaskStep
 from app.orchestrator import AVAILABLE_TOOLS
@@ -211,8 +211,7 @@ def health(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
         configured = bool(
-            get_config().openai_api_key
-            and get_config().openai_base_url
+            provider_is_configured()
             and setting_value(db, "model_name")
             and setting_value(db, "embedding_model_name")
         )
@@ -225,6 +224,7 @@ def health(db: Session = Depends(get_db)):
             "status": "ok",
             "database": "connected",
             "ai_configured": configured,
+            "ai_provider": get_config().llm_provider,
             "cost_tracking_configured": all(
                 float(setting_value(db, key)) > 0
                 for key in ("input_cost_per_1k_usd", "output_cost_per_1k_usd", "embedding_cost_per_1k_usd")

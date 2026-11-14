@@ -10,7 +10,7 @@ from app.config import get_config
 from app.database import SessionLocal
 from app.enquiries import create_enquiry
 from app.knowledge import ingest_document
-from app.llm import ModelRequestError
+from app.llm import ModelRequestError, provider_is_configured
 from app.migrate import run_migrations
 from app.models import Agent, Document, Enquiry, Event, Setting
 from app.sales import import_sales_rows
@@ -28,10 +28,18 @@ async def import_seed_data() -> None:
         for record in json.loads((SEED / "settings.json").read_text(encoding="utf-8")):
             if db.get(Setting, record["key"]) is None:
                 value = record["value"]
+                default_model = (
+                    config.gemini_model if config.llm_provider.strip().lower() == "gemini" else config.openai_model
+                )
+                default_embedding_model = (
+                    config.gemini_embedding_model
+                    if config.llm_provider.strip().lower() == "gemini"
+                    else config.openai_embedding_model
+                )
                 if record["key"] == "model_name" and not value:
-                    value = config.openai_model
+                    value = default_model
                 elif record["key"] == "embedding_model_name" and not value:
-                    value = config.openai_embedding_model
+                    value = default_embedding_model
                 upsert_setting(db, record["key"], value, record["description"])
         if db.get(Setting, "example_instructions") is None:
             upsert_setting(
@@ -39,10 +47,18 @@ async def import_seed_data() -> None:
                 json.loads((SEED / "example-instructions.json").read_text(encoding="utf-8")),
                 "Sample instructions displayed by the Control Hub.",
             )
+        default_model = (
+            config.gemini_model if config.llm_provider.strip().lower() == "gemini" else config.openai_model
+        )
+        default_embedding_model = (
+            config.gemini_embedding_model
+            if config.llm_provider.strip().lower() == "gemini"
+            else config.openai_embedding_model
+        )
         if db.get(Setting, "model_name") is None:
-            upsert_setting(db, "model_name", config.openai_model, "Chat model name; provider credentials remain server-side.")
+            upsert_setting(db, "model_name", default_model, "Chat model name; provider credentials remain server-side.")
         if db.get(Setting, "embedding_model_name") is None:
-            upsert_setting(db, "embedding_model_name", config.openai_embedding_model, "Embedding model name; provider credentials remain server-side.")
+            upsert_setting(db, "embedding_model_name", default_embedding_model, "Embedding model name; provider credentials remain server-side.")
         db.flush()
         agent_records = json.loads((SEED / "agents.json").read_text(encoding="utf-8"))
         if db.scalar(select(Event).where(Event.event_type == "seed_agents_imported")) is None:
@@ -57,7 +73,7 @@ async def import_seed_data() -> None:
         existing_sample = db.scalar(select(Document).where(Document.name == "sample: knowledge.md"))
         db.commit()
         if existing_sample is None:
-            if config.openai_api_key and config.openai_base_url and config.openai_embedding_model:
+            if provider_is_configured() and default_embedding_model:
                 content = (SEED / "knowledge.md").read_text(encoding="utf-8")
                 try:
                     document = await ingest_document(db, "sample: knowledge.md", "text/markdown", content)
@@ -98,7 +114,7 @@ def _record_pending_knowledge(db: Session, error: ModelRequestError | None) -> N
                 else f"Sample knowledge embedding failed: {error}"
             ),
             details={
-                "required": ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_EMBEDDING_MODEL"],
+                "required": ["provider API key, base URL, and embedding model server settings"],
                 "error_type": type(error).__name__ if error is not None else "",
             },
         ))

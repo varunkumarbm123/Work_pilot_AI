@@ -6,10 +6,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AppConfig(BaseSettings):
     database_url: str
+    llm_provider: str = ""
     openai_api_key: str = ""
     openai_base_url: str = ""
     openai_model: str = ""
     openai_embedding_model: str = ""
+    gemini_api_key: str = ""
+    gemini_base_url: str = ""
+    gemini_model: str = ""
+    gemini_embedding_model: str = ""
     frontend_origins: str = ""
     connector_adapter: str = "sample"
     smtp_host: str = ""
