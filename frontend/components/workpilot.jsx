@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 const NAV_ITEMS = [
-  ["overview", "Overview", "▦"],
+  ["dashboard", "Dashboard", "▦"],
   ["knowledge", "Knowledge library", "▤"],
   ["data", "Business data", "▥"],
   ["settings", "Settings", "⚙"],
@@ -51,7 +51,7 @@ function Empty({ children }) {
 }
 
 export default function WorkPilot() {
-  const [page, setPage] = useState("overview");
+  const [page, setPage] = useState("dashboard");
   const [health, setHealth] = useState({ state: "checking" });
   const [healthAttempt, setHealthAttempt] = useState(0);
 
@@ -99,7 +99,7 @@ export default function WorkPilot() {
     if (page === "knowledge") return <KnowledgeLibrary api={api} />;
     if (page === "data") return <BusinessData api={api} />;
     if (page === "settings") return <SettingsPage api={api} />;
-    return <Overview api={api} onNavigate={setPage} />;
+    return <Dashboard api={api} onNavigate={setPage} />;
   }, [api, page]);
 
   return (
@@ -141,7 +141,7 @@ export default function WorkPilot() {
   );
 }
 
-function Overview({ api, onNavigate }) {
+function Dashboard({ api, onNavigate }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
@@ -151,7 +151,7 @@ function Overview({ api, onNavigate }) {
   useEffect(() => { load(); }, [load]);
   return (
     <>
-      <PageIntro eyebrow="BUSINESS WORKSPACE" title="Your business, organized." description="Keep reference documents, sales data, and customer enquiries together in one workspace." />
+      <PageIntro eyebrow="BUSINESS DASHBOARD" title="Your business, organized." description="Track reference documents, sales data, and customer enquiries in one place." />
       <ErrorNote error={error} onRetry={load} />
       {summary && <>
         <div className="stats-grid">
