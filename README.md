@@ -88,4 +88,7 @@ There is no chat UI, conversational route, or chat history. The provider adapter
 - The public demo has no login. Browser session IDs isolate request/cost limits but are not authentication.
 - SMTP is optional; the default sample connector records approved content in the database.
 - Groq does not provide embeddings through the configured API, so its knowledge search uses PostgreSQL full-text retrieval; OpenAI/Gemini configurations use pgvector.
-- External provider quotas and availability are controlled by the provider. On capacity errors, tasks are retained and can be retried. A complete live acceptance flow still depends on the configured provider and database being available.
+- The hosted provider token prices are currently unset (`cost_tracking_configured=false`), so estimated-spend caps are inactive; request and rate caps remain enabled. Configure token prices in Settings to enable spend tracking.
+- Live checks verified task submission, runtime planning, knowledge citations, sales summaries, approve/edit/reject-regenerate, and recovery of persisted rejected work after a backend restart. Policy upload and routing to a newly created agent have not been verified against the hosted services.
+- The hosted database contains an older sample policy document. Seed import does not overwrite existing sample content; a fresh database receives the current `/seed` version.
+- External provider quotas and availability are controlled by the provider. On capacity errors, tasks are retained and can be retried.
