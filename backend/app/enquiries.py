@@ -5,6 +5,7 @@ from app.models import Enquiry, Event
 
 def create_enquiry(
     db: Session,
+    workspace_id: str,
     subject: str,
     message: str,
     customer_name: str = "",
@@ -12,6 +13,7 @@ def create_enquiry(
     source: str = "user",
 ) -> Enquiry:
     enquiry = Enquiry(
+        workspace_id=workspace_id,
         subject=subject.strip(),
         message=message.strip(),
         customer_name=customer_name.strip(),
@@ -21,6 +23,7 @@ def create_enquiry(
     db.add(enquiry)
     db.flush()
     db.add(Event(
+        workspace_id=workspace_id,
         event_type="enquiry_created",
         message="A customer enquiry was added to the workspace.",
         details={"enquiry_id": enquiry.id, "source": source},

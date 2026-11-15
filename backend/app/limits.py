@@ -23,14 +23,22 @@ def session_spend(db: Session, session_id: str, currency: str) -> float:
     )
 
 
-def reserve_session_request(db: Session, session_id: str) -> None:
+def reserve_session_request(
+    db: Session, session_id: str, workspace_id: str | None = None
+) -> None:
     session_match = Event.details["session_id"].as_string() == session_id
     total = db.scalar(
         select(func.count()).select_from(Event).where(
             Event.event_type == "session_request", session_match
         )
     ) or 0
-    cap = int(setting_value(db, "request_cap_per_session"))
+    cap = int(
+        setting_value(
+            db,
+            "request_cap_per_session",
+            workspace_id=workspace_id,
+        )
+    )
     if total >= cap:
         raise HTTPException(status_code=429, detail="This browser session reached its configured request cap.")
     recent = db.scalar(
@@ -40,15 +48,26 @@ def reserve_session_request(db: Session, session_id: str) -> None:
             Event.created_at >= datetime.now(timezone.utc) - timedelta(minutes=1),
         )
     ) or 0
-    rate = int(setting_value(db, "rate_limit_per_minute"))
+    rate = int(
+        setting_value(
+            db,
+            "rate_limit_per_minute",
+            workspace_id=workspace_id,
+        )
+    )
     if recent >= rate:
         raise HTTPException(status_code=429, detail="This browser session is temporarily rate limited.")
-    currency = str(setting_value(db, "billing_currency"))
+    currency = str(
+        setting_value(db, "billing_currency", workspace_id=workspace_id)
+    )
     spend = session_spend(db, session_id, currency)
-    cost_cap = float(setting_value(db, "cost_cap_per_session"))
+    cost_cap = float(
+        setting_value(db, "cost_cap_per_session", workspace_id=workspace_id)
+    )
     if currency and spend >= cost_cap:
         raise HTTPException(status_code=429, detail="This browser session reached its configured model cost cap.")
     db.add(Event(
+        workspace_id=workspace_id,
         event_type="session_request",
         message="A write request was accepted for this browser session.",
         details={"session_id": session_id},

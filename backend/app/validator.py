@@ -16,16 +16,25 @@ async def validate_draft(
     db: Session,
     task_id: str,
     step_id: str,
+    workspace_id: str,
     instruction: str,
     draft: str,
     business_evidence: dict | None = None,
 ) -> tuple[dict, list[RetrievedSource], str, str]:
-    policy_sources = await retrieve(db, f"{instruction}\n{draft}", task_id=task_id, step_id=step_id)
+    policy_sources = await retrieve(
+        db,
+        f"{instruction}\n{draft}",
+        workspace_id=workspace_id,
+        task_id=task_id,
+        step_id=step_id,
+    )
     policy = [
         {"document": source.document, "chunk_id": source.chunk_id, "text": source.content}
         for source in policy_sources
     ]
-    policy_guidance = str(setting_value(db, "validation_policy"))
+    policy_guidance = str(
+        setting_value(db, "validation_policy", workspace_id=workspace_id)
+    )
     prompt = (
         "Evaluate the provided draft against the retrieved policy evidence and task context. "
         "Do not apply rules that are not in the supplied guidance or evidence. "
@@ -46,6 +55,7 @@ async def validate_draft(
         json_mode=True,
         task_id=task_id,
         step_id=step_id,
+        workspace_id=workspace_id,
     )
     try:
         verdict = json.loads(response.content)
@@ -78,7 +88,9 @@ async def validate_draft(
             "prompt": prompt,
             "policy_sources": policy,
             "cost": response.cost,
-            "currency": str(setting_value(db, "billing_currency")),
+            "currency": str(
+                setting_value(db, "billing_currency", workspace_id=workspace_id)
+            ),
         },
         model=response.model,
     ))

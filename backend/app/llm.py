@@ -128,39 +128,78 @@ def _embedding_result(provider: str, response: dict[str, Any]) -> tuple[list[flo
     return embedding, token_count
 
 
-def _request_settings(db: Session) -> tuple[int, float]:
-    retries = max(0, min(int(setting_value(db, "retry_limit")), 10))
-    timeout = max(1.0, min(float(setting_value(db, "request_timeout_seconds")), 180.0))
+def _request_settings(
+    db: Session, workspace_id: str | None = None
+) -> tuple[int, float]:
+    retries = max(
+        0,
+        min(
+            int(setting_value(db, "retry_limit", workspace_id=workspace_id)),
+            10,
+        ),
+    )
+    timeout = max(
+        1.0,
+        min(
+            float(
+                setting_value(
+                    db,
+                    "request_timeout_seconds",
+                    workspace_id=workspace_id,
+                )
+            ),
+            180.0,
+        ),
+    )
     return retries, timeout
 
 
-def _model_and_cost(db: Session, response: dict[str, Any]) -> tuple[str, float]:
-    model = str(response.get("model") or setting_value(db, "model_name"))
+def _model_and_cost(
+    db: Session, response: dict[str, Any], workspace_id: str | None = None
+) -> tuple[str, float]:
+    model = str(
+        response.get("model")
+        or setting_value(db, "model_name", workspace_id=workspace_id)
+    )
     usage = response.get("usage") or {}
     prompt_tokens = int(usage.get("prompt_tokens", 0))
     completion_tokens = int(usage.get("completion_tokens", 0))
-    prompt_rate = float(setting_value(db, "input_cost_per_1k_tokens"))
-    completion_rate = float(setting_value(db, "output_cost_per_1k_tokens"))
+    prompt_rate = float(
+        setting_value(db, "input_cost_per_1k_tokens", workspace_id=workspace_id)
+    )
+    completion_rate = float(
+        setting_value(db, "output_cost_per_1k_tokens", workspace_id=workspace_id)
+    )
     cost = prompt_tokens * prompt_rate / 1000
     cost += completion_tokens * completion_rate / 1000
     return model, cost
 
 
 def _check_model_cost_cap(
-    db: Session, task_id: str | None, session_id: str | None = None
+    db: Session,
+    task_id: str | None,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> None:
     if task_id:
         task = db.get(Task, task_id)
         if task is None:
             raise ModelRequestError("The task no longer exists.")
         session_id = task.session_id
+        workspace_id = task.workspace_id
+    if workspace_id is None:
+        workspace_id = session_id
     if not session_id:
         return
-    currency = str(setting_value(db, "billing_currency"))
+    currency = str(
+        setting_value(db, "billing_currency", workspace_id=workspace_id)
+    )
     if not currency:
         return
     spend = session_spend(db, session_id, currency)
-    cap = float(setting_value(db, "cost_cap_per_session"))
+    cap = float(
+        setting_value(db, "cost_cap_per_session", workspace_id=workspace_id)
+    )
     if spend >= cap:
         raise ModelRequestError(
             "The browser session reached its configured model cost cap; adjust Settings or start a new session."
@@ -173,9 +212,10 @@ async def _post_with_retry(
     payload: dict[str, Any],
     task_id: str | None = None,
     step_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     provider, api_key, base_url = _provider_config()
-    retries, timeout = _request_settings(db)
+    retries, timeout = _request_settings(db, workspace_id)
     headers = _request_headers(provider, api_key, endpoint)
     async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(retries + 1):
@@ -235,9 +275,15 @@ async def complete(
     json_mode: bool = False,
     task_id: str | None = None,
     step_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> ModelResponse:
-    _check_model_cost_cap(db, task_id)
-    model = str(setting_value(db, "model_name"))
+    if task_id:
+        task = db.get(Task, task_id)
+        if task is None:
+            raise ModelRequestError("The task no longer exists.")
+        workspace_id = task.workspace_id
+    _check_model_cost_cap(db, task_id, workspace_id=workspace_id)
+    model = str(setting_value(db, "model_name", workspace_id=workspace_id))
     if not model:
         raise ModelRequestError("Configure a completion model in Settings.")
     provider, _, _ = _provider_config()
@@ -245,12 +291,20 @@ async def complete(
         provider,
         model,
         messages,
-        int(setting_value(db, "max_completion_tokens")),
+        int(
+            setting_value(
+                db,
+                "max_completion_tokens",
+                workspace_id=workspace_id,
+            )
+        ),
         json_mode,
     )
-    response = await _post_with_retry(db, endpoint, payload, task_id, step_id)
+    response = await _post_with_retry(
+        db, endpoint, payload, task_id, step_id, workspace_id
+    )
     content = _chat_result(response)
-    used_model, cost = _model_and_cost(db, response)
+    used_model, cost = _model_and_cost(db, response, workspace_id)
     return ModelResponse(content, used_model, cost)
 
 
@@ -260,26 +314,47 @@ async def embed(
     task_id: str | None = None,
     step_id: str | None = None,
     session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> list[float]:
-    model = str(setting_value(db, "embedding_model_name"))
+    if task_id:
+        task = db.get(Task, task_id)
+        if task is None:
+            raise ModelRequestError("The task no longer exists.")
+        workspace_id = task.workspace_id
+    if workspace_id is None:
+        workspace_id = session_id
+    model = str(
+        setting_value(db, "embedding_model_name", workspace_id=workspace_id)
+    )
     if not model:
         raise ModelRequestError("Configure an embedding model in Settings.")
-    _check_model_cost_cap(db, task_id, session_id)
+    _check_model_cost_cap(db, task_id, session_id, workspace_id)
     provider, _, _ = _provider_config()
     endpoint, payload = _embedding_request(provider, model, text)
-    response = await _post_with_retry(db, endpoint, payload, task_id, step_id)
+    response = await _post_with_retry(
+        db, endpoint, payload, task_id, step_id, workspace_id
+    )
     vector, token_count = _embedding_result(provider, response)
-    token_rate = float(setting_value(db, "embedding_cost_per_1k_tokens"))
+    token_rate = float(
+        setting_value(
+            db,
+            "embedding_cost_per_1k_tokens",
+            workspace_id=workspace_id,
+        )
+    )
     cost = token_count * token_rate / 1000
     db.add(Event(
+        workspace_id=workspace_id,
         task_id=task_id,
         event_type="embedding_call",
         message="A text embedding request completed.",
         details={
             "step_id": step_id,
             "cost": cost,
-            "currency": str(setting_value(db, "billing_currency")),
-            "session_id": session_id,
+            "currency": str(
+                setting_value(db, "billing_currency", workspace_id=workspace_id)
+            ),
+            "session_id": session_id or workspace_id,
         },
         model=str(response.get("model") or model),
     ))

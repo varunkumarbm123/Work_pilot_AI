@@ -37,6 +37,7 @@ def extract_text(name: str, content_type: str, content: bytes) -> str:
 
 async def ingest_document(
     db: Session,
+    workspace_id: str,
     name: str,
     content_type: str,
     text: str,
@@ -44,22 +45,39 @@ async def ingest_document(
     step_id: str | None = None,
     session_id: str | None = None,
 ) -> Document:
-    chunk_size = max(100, min(int(setting_value(db, "chunk_size")), 8000))
-    overlap = max(0, min(int(setting_value(db, "chunk_overlap")), chunk_size // 2))
+    chunk_size = max(
+        100, min(int(setting_value(db, "chunk_size", workspace_id=workspace_id)), 8000)
+    )
+    overlap = max(
+        0,
+        min(
+            int(setting_value(db, "chunk_overlap", workspace_id=workspace_id)),
+            chunk_size // 2,
+        ),
+    )
     stride = chunk_size - overlap
     chunks = []
     for index in range(0, len(text), stride):
         chunks.append(text[index : index + chunk_size])
         if index + chunk_size >= len(text):
             break
-    document = Document(name=name, content_type=content_type)
+    document = Document(
+        workspace_id=workspace_id,
+        name=name,
+        content_type=content_type,
+    )
     db.add(document)
     db.flush()
     for index, content in enumerate(chunks):
         vector = None
         if provider_supports_embeddings():
             vector = await embed(
-                db, content, task_id=task_id, step_id=step_id, session_id=session_id
+                db,
+                content,
+                task_id=task_id,
+                step_id=step_id,
+                session_id=session_id or workspace_id,
+                workspace_id=workspace_id,
             )
         db.add(KnowledgeChunk(
             document_id=document.id, chunk_index=index, content=content, embedding=vector
@@ -72,19 +90,29 @@ async def ingest_document(
 async def retrieve(
     db: Session,
     query: str,
+    workspace_id: str,
     top_k: int | None = None,
     task_id: str | None = None,
     step_id: str | None = None,
 ) -> list[RetrievedSource]:
-    count = int(setting_value(db, "top_k")) if top_k is None else top_k
+    count = (
+        int(setting_value(db, "top_k", workspace_id=workspace_id))
+        if top_k is None
+        else top_k
+    )
     count = max(1, min(count, 20))
     if provider_supports_embeddings():
-        vector = await embed(db, query, task_id=task_id, step_id=step_id)
+        vector = await embed(
+            db, query, task_id=task_id, step_id=step_id, workspace_id=workspace_id
+        )
         distance = KnowledgeChunk.embedding.cosine_distance(vector)
         statement = (
             select(Document.name, KnowledgeChunk.id, KnowledgeChunk.content, distance.label("distance"))
             .join(KnowledgeChunk, KnowledgeChunk.document_id == Document.id)
-            .where(KnowledgeChunk.embedding.is_not(None))
+            .where(
+                Document.workspace_id == workspace_id,
+                KnowledgeChunk.embedding.is_not(None),
+            )
             .order_by(distance)
             .limit(count)
         )
@@ -98,7 +126,10 @@ async def retrieve(
         statement = (
             select(Document.name, KnowledgeChunk.id, KnowledgeChunk.content, (1 - rank).label("distance"))
             .join(KnowledgeChunk, KnowledgeChunk.document_id == Document.id)
-            .where(search_vector.op("@@")(query_vector))
+            .where(
+                Document.workspace_id == workspace_id,
+                search_vector.op("@@")(query_vector),
+            )
             .order_by(rank.desc())
             .limit(count)
         )

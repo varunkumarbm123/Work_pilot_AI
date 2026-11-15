@@ -1,5 +1,15 @@
 # WorkPilot AI build status
 
+## Email authentication update
+- **Status:** Implemented locally; deployment and live authentication verification are pending.
+- **Implemented:** Email/password signup and login, revocable hashed server-side sessions, an HttpOnly cookie, login gating for business APIs, workspace ownership and data scoping, and per-workspace sample data initialization. Added a login/signup screen and logout flow; browser API requests use a same-origin `/backend` rewrite.
+- **Schema:** Added migration `0006_email_auth_workspaces.py`; the initial and restore migrations now preserve historical schemas and create a system workspace for legacy data.
+- **Validation:** Backend tests pass (33); frontend production build passes; backend Python compilation passes; Alembic offline SQL renders; `git diff --check` passes.
+- **Live state:** The existing API health endpoint currently responds with HTTP 200 and a connected database, but the deployed release does not yet include auth. Live signup/login and tenant-isolation checks have not been performed.
+- **Environment:** Backend needs `FRONTEND_ORIGINS` set to the frontend origin; frontend needs `NEXT_PUBLIC_API_BASE_URL` set to the API base URL at build time. Existing server-side database and LLM secrets must remain configured. No credentials were added to the repository.
+- **Known issues:** No live PostgreSQL migration or auth flow has been executed. Deployment configuration cannot be considered verified until both environment settings are present and the new deployment passes the live signup/login checks.
+- **Next:** Configure production environment variables, deploy migration and app, then verify signup, login/logout, workspace isolation, and one authenticated task flow.
+
 ## Step 1 — Repository foundation, schema, state, and seeds
 - **Status:** Complete.
 - **Files restored:** `backend/app/models.py`, `state.py`, `config.py`, `seed_import.py`; provider dependency manifest; `.env.example`; `seed/agents.json`, `seed/settings.json`, and `seed/example-instructions.json`.

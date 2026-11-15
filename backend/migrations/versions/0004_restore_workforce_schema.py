@@ -1,6 +1,8 @@
+import uuid
+
 from alembic import op
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column
+from sqlalchemy import Column, text
 
 from app import models
 from app.database import Base
@@ -18,12 +20,20 @@ def upgrade() -> None:
     Base.metadata.create_all(
         bind=bind,
         tables=[
+            models.Workspace.__table__,
             models.Agent.__table__,
             models.Task.__table__,
             models.TaskStep.__table__,
             models.Event.__table__,
             models.SentItem.__table__,
         ],
+    )
+    workspace_id = str(uuid.uuid4())
+    op.execute(
+        text(
+            "INSERT INTO workspaces (id, name, is_system, created_at) "
+            f"VALUES ('{workspace_id}', 'Legacy sample workspace', true, now())"
+        )
     )
     op.add_column("knowledge_chunks", Column("embedding", Vector(), nullable=True))
 

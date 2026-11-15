@@ -33,9 +33,17 @@ def _allowed_tools(agent: Agent) -> set[str]:
 
 
 async def create_plan(
-    db: Session, instruction: str, task_id: str, agent_ids: list[str] | None = None
+    db: Session,
+    instruction: str,
+    task_id: str,
+    workspace_id: str,
+    agent_ids: list[str] | None = None,
 ) -> tuple[list[dict], str, str, str, float]:
-    statement = select(Agent).order_by(Agent.created_at)
+    statement = (
+        select(Agent)
+        .where(Agent.workspace_id == workspace_id)
+        .order_by(Agent.created_at)
+    )
     if agent_ids:
         statement = statement.where(Agent.id.in_(agent_ids))
     agents = db.scalars(statement).all()
@@ -52,8 +60,14 @@ async def create_plan(
         }
         for agent in agents
     ]
-    max_steps = max(1, min(int(setting_value(db, "max_task_steps")), 20))
-    system_prompt = str(setting_value(db, "system_prompt"))
+    max_steps = max(
+        1,
+        min(
+            int(setting_value(db, "max_task_steps", workspace_id=workspace_id)),
+            20,
+        ),
+    )
+    system_prompt = str(setting_value(db, "system_prompt", workspace_id=workspace_id))
     prompt = (
         "Create a dependency-ordered execution plan for the user's instruction. "
         "Use the supplied agent profiles to select an agent for each step at runtime. "
@@ -76,6 +90,7 @@ async def create_plan(
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
         json_mode=True,
         task_id=task_id,
+        workspace_id=workspace_id,
     )
     try:
         parsed = json.loads(response.content)

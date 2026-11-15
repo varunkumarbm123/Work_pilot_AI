@@ -1,15 +1,18 @@
 import asyncio
+import hashlib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
-from app.knowledge import _full_text_query, extract_text, ingest_document
+from app.auth import create_session, get_session_user, hash_password, verify_password
+from app.knowledge import _full_text_query, extract_text, ingest_document, retrieve
 from app.llm import (
     ModelRequestError,
     _chat_request,
@@ -21,10 +24,20 @@ from app.llm import (
     _request_url,
     provider_supports_embeddings,
 )
-from app.main import ApprovalInput, SettingInput, app, list_events, review_task, retry_task, update_setting
-from app.models import KnowledgeChunk, Task
+from app.main import (
+    ApprovalInput,
+    SettingInput,
+    app,
+    _set_auth_cookie,
+    list_agents,
+    list_events,
+    review_task,
+    retry_task,
+    update_setting,
+)
+from app.models import AuthSession, KnowledgeChunk, Setting, Task, User, WorkspaceSetting
 from app.orchestrator import _allowed_tools, create_plan, normalize_agent_tools
-from app.sales import parse_sales_csv
+from app.sales import parse_sales_csv, sales_summary
 from app.settings_store import setting_value
 from app.state import InvalidTransition, transition_task
 from app.status import StepStatus, TaskStatus
@@ -69,6 +82,104 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(setting_value(FakeSession(), "example_instructions", []), [])
 
+    def test_workspace_setting_overrides_global_default(self):
+        class FakeSession:
+            def get(self, model, key):
+                if model is WorkspaceSetting:
+                    return SettingRecord("private prompt")
+                if model is Setting:
+                    return SettingRecord("global prompt")
+                return None
+
+        self.assertEqual(
+            setting_value(
+                FakeSession(),
+                "system_prompt",
+                workspace_id="workspace-a",
+            ),
+            "private prompt",
+        )
+
+
+class AuthenticationTests(unittest.TestCase):
+    def test_password_hash_is_not_reversible_and_verifies_only_the_password(self):
+        stored = hash_password("a-long-password-for-tests")
+
+        self.assertNotIn("a-long-password-for-tests", stored)
+        self.assertTrue(verify_password("a-long-password-for-tests", stored))
+        self.assertFalse(verify_password("another-password", stored))
+        self.assertFalse(verify_password("a-long-password-for-tests", "invalid"))
+
+    def test_persisted_session_key_is_a_hash_and_resolves_to_its_user(self):
+        class CaptureSession:
+            added = []
+
+            def add(self, item):
+                self.added.append(item)
+
+        db = CaptureSession()
+        token, session = create_session(cast(Session, db), "user-id", 14)
+        user = SimpleNamespace(id="user-id")
+
+        class LookupSession:
+            def get(self, model, key):
+                if model is AuthSession:
+                    self.assert_hash = key
+                    return session
+                if model is User:
+                    return user
+                return None
+
+        lookup = LookupSession()
+        self.assertEqual(len(db.added), 1)
+        self.assertNotEqual(session.token_hash, token)
+        self.assertEqual(session.token_hash, hashlib.sha256(token.encode()).hexdigest())
+        self.assertIs(get_session_user(cast(Session, lookup), token), user)
+        self.assertEqual(lookup.assert_hash, session.token_hash)
+
+    def test_expired_session_is_revoked(self):
+        session = SimpleNamespace(
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+        )
+
+        class ExpiredSession:
+            deleted = None
+            committed = False
+
+            def get(self, model, key):
+                return session if model is AuthSession else None
+
+            def delete(self, value):
+                self.deleted = value
+
+            def commit(self):
+                self.committed = True
+
+        db = ExpiredSession()
+        self.assertIsNone(
+            get_session_user(cast(Session, db), "expired-token")
+        )
+        self.assertIs(db.deleted, session)
+        self.assertTrue(db.committed)
+
+    def test_auth_cookie_is_http_only_secure_and_same_site(self):
+        from fastapi.responses import JSONResponse
+
+        config = SimpleNamespace(
+            auth_cookie_name="workpilot_session",
+            auth_cookie_secure=True,
+            auth_cookie_samesite="lax",
+            auth_session_days=14,
+        )
+        response = JSONResponse({})
+        with patch("app.main.get_config", return_value=config):
+            _set_auth_cookie(response, "opaque-token")
+
+        cookie = response.headers["set-cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("Secure", cookie)
+        self.assertIn("SameSite=lax", cookie)
+
 
 class CurrencySettingTests(unittest.IsolatedAsyncioTestCase):
     async def test_billing_currency_requires_three_uppercase_letters(self):
@@ -93,6 +204,7 @@ class CurrencySettingTests(unittest.IsolatedAsyncioTestCase):
             await update_setting(
                 "billing_currency",
                 SettingInput(value="abc"),
+                workspace_id="workspace-id",
                 db=cast(Session, db),
             )
         self.assertEqual(error.exception.status_code, 422)
@@ -100,6 +212,7 @@ class CurrencySettingTests(unittest.IsolatedAsyncioTestCase):
         result = await update_setting(
             "billing_currency",
             SettingInput(value="ABC"),
+            workspace_id="workspace-id",
             db=cast(Session, db),
         )
         self.assertEqual(result["value"], "ABC")
@@ -205,8 +318,8 @@ class GeminiProviderTests(unittest.TestCase):
                 _provider_config()
 
 
-class ActivityScopeTests(unittest.TestCase):
-    def test_activity_query_is_limited_to_the_browser_session(self):
+class ActivityScopeTests(unittest.IsolatedAsyncioTestCase):
+    def test_activity_query_is_limited_to_the_workspace(self):
         class EmptyResult:
             def all(self):
                 return []
@@ -219,27 +332,103 @@ class ActivityScopeTests(unittest.TestCase):
                 return EmptyResult()
 
         db = RecordingSession()
-        self.assertEqual(list_events(x_session_id="current-session", db=db), [])
+        self.assertEqual(list_events(workspace_id="current-workspace", db=db), [])
         compiled = db.statement.compile(dialect=postgresql.dialect())
         sql = str(compiled)
-        self.assertIn("tasks.session_id", sql)
+        self.assertIn("tasks.workspace_id", sql)
+        self.assertIn("events.workspace_id", sql)
         self.assertIn("events.details", sql)
-        self.assertIn("current-session", compiled.params.values())
+        self.assertIn("current-workspace", compiled.params.values())
 
-    def test_activity_query_requires_a_session_identifier(self):
+    def test_agent_list_is_workspace_scoped(self):
+        class EmptyResult:
+            def all(self):
+                return []
+
         class RecordingSession:
-            def scalars(self, statement):
-                raise AssertionError("A query must not run without a session identifier.")
+            statement = None
 
+            def scalars(self, statement):
+                self.statement = statement
+                return EmptyResult()
+
+        db = RecordingSession()
+        self.assertEqual(list_agents(workspace_id="workspace-a", db=db), [])
+        compiled = db.statement.compile(dialect=postgresql.dialect())
+        self.assertIn("agents.workspace_id", str(compiled))
+        self.assertIn("workspace-a", compiled.params.values())
+
+    def test_sales_summary_is_workspace_scoped(self):
+        class EmptyResult:
+            def all(self):
+                return []
+
+        class RecordingSession:
+            statement = None
+
+            def scalars(self, statement):
+                self.statement = statement
+                return EmptyResult()
+
+        db = RecordingSession()
+        sales_summary(cast(Session, db), "workspace-a")
+        compiled = db.statement.compile(dialect=postgresql.dialect())
+        self.assertIn("sales_rows.workspace_id", str(compiled))
+        self.assertIn("workspace-a", compiled.params.values())
+
+    async def test_knowledge_retrieval_is_workspace_scoped(self):
+        class EmptyResult:
+            def all(self):
+                return []
+
+        class RecordingSession:
+            statement = None
+
+            def execute(self, statement):
+                self.statement = statement
+                return EmptyResult()
+
+        db = RecordingSession()
+        with (
+            patch("app.knowledge.provider_supports_embeddings", return_value=False),
+            patch(
+                "app.knowledge.setting_value",
+                side_effect=lambda _, key, **kwargs: 5,
+            ),
+        ):
+            self.assertEqual(
+                await retrieve(cast(Session, db), "policy", workspace_id="workspace-a"),
+                [],
+            )
+        compiled = db.statement.compile(dialect=postgresql.dialect())
+        self.assertIn("documents.workspace_id", str(compiled))
+        self.assertIn("workspace-a", compiled.params.values())
+
+    def test_workspace_task_lookup_is_scoped(self):
+        class RecordingSession:
+            statement = None
+
+            def scalar(self, statement):
+                self.statement = statement
+                return None
+
+        from app.main import _workspace_task
+
+        db = RecordingSession()
         with self.assertRaises(HTTPException) as error:
-            list_events(x_session_id=None, db=RecordingSession())
-        self.assertEqual(error.exception.status_code, 400)
+            _workspace_task(db, "foreign-task", "current-workspace")
+        self.assertEqual(error.exception.status_code, 404)
+        compiled = db.statement.compile(dialect=postgresql.dialect())
+        self.assertIn("tasks.workspace_id", str(compiled))
+        self.assertIn("current-workspace", compiled.params.values())
 
 
 class ApiSurfaceTests(unittest.TestCase):
     def test_workflow_routes_are_present_without_chat_routes(self):
         paths = app.openapi()["paths"]
         self.assertIn("/api/tasks", paths)
+        self.assertIn("/api/auth/login", paths)
+        self.assertIn("/api/auth/signup", paths)
         self.assertIn("/api/approvals", paths)
         self.assertIn("/api/events", paths)
         self.assertFalse(any("/chat" in path for path in paths))
@@ -264,6 +453,8 @@ class ApprovalExecutionTests(unittest.IsolatedAsyncioTestCase):
                 return task
 
             def scalar(self, statement):
+                if "tasks" in str(statement):
+                    return task
                 return step
 
             def add(self, item):
@@ -279,6 +470,7 @@ class ApprovalExecutionTests(unittest.IsolatedAsyncioTestCase):
             result = await review_task(
                 task.id,
                 ApprovalInput(action="reject", reason="Please remove unsupported assumptions."),
+                workspace_id="workspace-id",
                 db=cast(Session, FakeSession()),
             )
             scheduled = list(app.state.background_tasks)
@@ -294,7 +486,7 @@ class ApprovalExecutionTests(unittest.IsolatedAsyncioTestCase):
         task = SimpleNamespace(id="task-id", status=TaskStatus.FAILED.value)
 
         class FakeSession:
-            def get(self, model, item_id):
+            def scalar(self, statement):
                 return task
 
             def add(self, item):
@@ -307,7 +499,11 @@ class ApprovalExecutionTests(unittest.IsolatedAsyncioTestCase):
             patch("app.main.execute_task", new_callable=AsyncMock) as execute_task,
             patch.object(app.state, "background_tasks", set(), create=True),
         ):
-            result = await retry_task(task.id, db=cast(Session, FakeSession()))
+            result = await retry_task(
+                task.id,
+                workspace_id="workspace-id",
+                db=cast(Session, FakeSession()),
+            )
             scheduled = list(app.state.background_tasks)
             self.assertEqual(result, {"status": "retrying"})
             self.assertEqual(len(scheduled), 1)
@@ -362,12 +558,15 @@ class KnowledgeChunkTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "app.knowledge.setting_value",
-                side_effect=lambda _, key: {"chunk_size": 100, "chunk_overlap": 20}[key],
+                side_effect=lambda _, key, **kwargs: {
+                    "chunk_size": 100,
+                    "chunk_overlap": 20,
+                }[key],
             ),
             patch("app.knowledge.provider_supports_embeddings", return_value=False),
         ):
             await ingest_document(
-                cast(Session, db), "policy.md", "text/markdown", text
+                cast(Session, db), "workspace-id", "policy.md", "text/markdown", text
             )
 
         chunks = [item.content for item in db.added if isinstance(item, KnowledgeChunk)]
@@ -435,12 +634,17 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "app.orchestrator.setting_value",
-                side_effect=lambda db, key: {"max_task_steps": 6, "system_prompt": "Base prompt"}[key],
+                side_effect=lambda db, key, **kwargs: {"max_task_steps": 6, "system_prompt": "Base prompt"}[key],
             ),
             patch("app.orchestrator.complete", new_callable=AsyncMock) as complete,
         ):
             complete.return_value = model_response
-            plan, _, _, _, _ = await create_plan(cast(Session, FakeSession()), "Analyze sales.", "task-id")
+            plan, _, _, _, _ = await create_plan(
+                cast(Session, FakeSession()),
+                "Analyze sales.",
+                "task-id",
+                "workspace-id",
+            )
 
         prompt = complete.await_args.args[1][1]["content"]
         self.assertIn("Any tool required for correctness must be listed", prompt)
@@ -480,13 +684,17 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "app.orchestrator.setting_value",
-                side_effect=lambda session, key: {"max_task_steps": 6, "system_prompt": "Base prompt"}[key],
+                side_effect=lambda session, key, **kwargs: {"max_task_steps": 6, "system_prompt": "Base prompt"}[key],
             ),
             patch("app.orchestrator.complete", new_callable=AsyncMock) as complete,
         ):
             complete.return_value = model_response
             plan, _, _, _, _ = await create_plan(
-                cast(Session, db), "Analyze sales.", "task-id", ["selected-agent"]
+                cast(Session, db),
+                "Analyze sales.",
+                "task-id",
+                "workspace-id",
+                ["selected-agent"],
             )
 
         compiled = db.statement.compile(dialect=postgresql.dialect())

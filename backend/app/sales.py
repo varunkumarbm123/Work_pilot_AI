@@ -26,15 +26,30 @@ def parse_sales_csv(content: bytes) -> tuple[list[dict[str, str]], list[str]]:
     return rows, headers
 
 
-def import_sales_rows(db: Session, dataset: str, rows: list[dict[str, str]]) -> int:
-    db.execute(delete(SalesRow).where(SalesRow.dataset == dataset))
-    db.add_all([SalesRow(dataset=dataset, row_data=row) for row in rows])
+def import_sales_rows(
+    db: Session, workspace_id: str, dataset: str, rows: list[dict[str, str]]
+) -> int:
+    db.execute(
+        delete(SalesRow).where(
+            SalesRow.workspace_id == workspace_id,
+            SalesRow.dataset == dataset,
+        )
+    )
+    db.add_all([
+        SalesRow(workspace_id=workspace_id, dataset=dataset, row_data=row)
+        for row in rows
+    ])
     db.commit()
     return len(rows)
 
 
-def sales_summary(db: Session, dataset: str | None = None) -> dict:
-    statement = select(SalesRow).order_by(SalesRow.id).limit(2000)
+def sales_summary(db: Session, workspace_id: str, dataset: str | None = None) -> dict:
+    statement = (
+        select(SalesRow)
+        .where(SalesRow.workspace_id == workspace_id)
+        .order_by(SalesRow.id)
+        .limit(2000)
+    )
     if dataset:
         statement = statement.where(SalesRow.dataset == dataset)
     records = db.scalars(statement).all()

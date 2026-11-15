@@ -19,6 +19,10 @@ class AppConfig(BaseSettings):
     groq_base_url: str = ""
     groq_model: str = ""
     frontend_origins: str = ""
+    auth_cookie_name: str = "workpilot_session"
+    auth_cookie_secure: bool = True
+    auth_cookie_samesite: str = "lax"
+    auth_session_days: int = 14
     connector_adapter: str = "sample"
     smtp_host: str = ""
     smtp_port: int | None = None

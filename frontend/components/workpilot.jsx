@@ -14,7 +14,7 @@ const NAV_ITEMS = [
   ["settings", "Settings", "⚙"],
 ];
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "");
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ? "/backend" : "";
 const EMPTY_STATUS_CODES = Object.freeze({ task: Object.freeze({}), step: Object.freeze({}) });
 
 function classNames(...values) {
@@ -72,28 +72,33 @@ function Empty({ children }) {
 
 export default function WorkPilot() {
   const [page, setPage] = useState("home");
-  const [sessionId, setSessionId] = useState("");
   const [health, setHealth] = useState({ state: "checking" });
   const [healthAttempt, setHealthAttempt] = useState(0);
   const [approvalCount, setApprovalCount] = useState(0);
+  const [auth, setAuth] = useState({ state: "checking", user: null, error: "" });
+  const [authAttempt, setAuthAttempt] = useState(0);
 
   const api = useCallback(async (path, options = {}) => {
     if (!API_BASE) throw new Error("Set NEXT_PUBLIC_API_BASE_URL to the deployed backend URL.");
     const headers = { ...(options.headers || {}) };
-    if (sessionId) headers["X-Session-ID"] = sessionId;
     if (options.body && !(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-    const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    const response = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: "include" });
     const contentType = response.headers.get("content-type") || "";
     const result = contentType.includes("application/json") ? await response.json() : await response.text();
     if (!response.ok) {
       const message = typeof result === "object" ? result.detail || result.message : result;
-      throw new Error(message || `Request failed with status ${response.status}.`);
+      if (response.status === 401 && !path.startsWith("/api/auth/")) {
+        window.dispatchEvent(new Event("workpilot:auth-expired"));
+      }
+      const error = new Error(message || `Request failed with status ${response.status}.`);
+      error.status = response.status;
+      throw error;
     }
     return result;
-  }, [sessionId]);
+  }, []);
 
   useEffect(() => {
-    if (!sessionId) return undefined;
+    if (auth.state !== "authenticated") return undefined;
     let active = true;
     const refresh = async () => {
       try {
@@ -106,23 +111,19 @@ export default function WorkPilot() {
     refresh();
     const timer = setInterval(refresh, 5000);
     return () => { active = false; clearInterval(timer); };
-  }, [api, sessionId]);
+  }, [api, auth.state]);
 
   useEffect(() => {
     let active = true;
     let timer;
     let attempt = 0;
-    const saved = window.localStorage.getItem("workpilot-session");
-    const id = saved || window.crypto.randomUUID();
-    if (!saved) window.localStorage.setItem("workpilot-session", id);
-    setSessionId(id);
     const ping = async () => {
       if (!API_BASE) {
         setHealth({ state: "missing", message: "Set NEXT_PUBLIC_API_BASE_URL to connect this interface." });
         return;
       }
       try {
-        const response = await fetch(`${API_BASE}/health`);
+        const response = await fetch(`${API_BASE}/health`, { credentials: "include" });
         const body = await response.json();
         if (!response.ok) throw new Error(body.detail || `Server returned ${response.status}.`);
         if (active) setHealth({ state: "ready", body });
@@ -143,9 +144,58 @@ export default function WorkPilot() {
     };
   }, [healthAttempt]);
 
+  useEffect(() => {
+    if (health.state === "missing") {
+      setAuth({ state: "error", user: null, error: health.message });
+      return undefined;
+    }
+    if (health.state !== "ready") return undefined;
+    let active = true;
+    setAuth((current) => ({ ...current, state: "checking", error: "" }));
+    api("/api/auth/me")
+      .then((user) => {
+        if (active) setAuth({ state: "authenticated", user, error: "" });
+      })
+      .catch((error) => {
+        if (!active) return;
+        if (error.status === 401) {
+          setAuth({ state: "unauthenticated", user: null, error: "" });
+        } else {
+          setAuth({ state: "error", user: null, error: error.message });
+        }
+      });
+    return () => { active = false; };
+  }, [api, authAttempt, health.state, health.message]);
+
+  useEffect(() => {
+    const expire = () => setAuth({ state: "unauthenticated", user: null, error: "Your session expired. Sign in again." });
+    window.addEventListener("workpilot:auth-expired", expire);
+    return () => window.removeEventListener("workpilot:auth-expired", expire);
+  }, []);
+
+  const authenticate = useCallback(async (path, credentials) => {
+    const user = await api(path, {
+      method: "POST",
+      body: JSON.stringify(credentials),
+    });
+    setAuth({ state: "authenticated", user, error: "" });
+    setPage("home");
+  }, [api]);
+
+  const signOut = useCallback(async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST" });
+      setAuth({ state: "unauthenticated", user: null, error: "" });
+      setApprovalCount(0);
+      setPage("home");
+    } catch (error) {
+      setAuth((current) => ({ ...current, error: error.message }));
+    }
+  }, [api]);
+
   const statusCodes = health.body?.status_codes || EMPTY_STATUS_CODES;
   const activePage = useMemo(() => {
-    const shared = { api, sessionId, onNavigate: setPage, statusCodes };
+    const shared = { api, onNavigate: setPage, statusCodes };
     if (page === "home") return <ControlHub {...shared} />;
     if (page === "dashboard") return <Dashboard {...shared} />;
     if (page === "agents") return <AgentBuilder {...shared} />;
@@ -155,7 +205,23 @@ export default function WorkPilot() {
     if (page === "activity") return <ActivityLog {...shared} />;
     if (page === "sent") return <SentItems {...shared} />;
     return <SettingsPage {...shared} />;
-  }, [api, page, sessionId, statusCodes]);
+  }, [api, page, statusCodes]);
+
+  if (auth.state !== "authenticated") {
+    return (
+      <AuthScreen
+        apiReady={health.state === "ready"}
+        serverState={health.state}
+        authState={auth.state}
+        error={auth.error}
+        onAuthenticate={authenticate}
+        onRetry={() => {
+          setHealthAttempt((value) => value + 1);
+          setAuthAttempt((value) => value + 1);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -178,7 +244,7 @@ export default function WorkPilot() {
             <span className={classNames("connection-dot", health.state === "ready" ? "online" : "")} />
             <span>{health.state === "ready" ? "Backend connected" : health.state === "missing" ? "Backend not configured" : "Connecting to backend"}</span>
           </div>
-          <div className="session-caption">No account required · demo session</div>
+          <div className="session-caption">{auth.user?.email}</div>
         </div>
       </aside>
 
@@ -192,6 +258,7 @@ export default function WorkPilot() {
               {health.state === "ready" ? "Live" : health.state === "missing" ? "Setup needed" : "Waking server"}
             </span>
             {health.state === "waking" && <button className="icon-button" title="Check server again" onClick={() => setHealthAttempt((value) => value + 1)}>↻</button>}
+            <button className="button button-quiet button-small" onClick={signOut}>Sign out</button>
           </div>
         </header>
         {health.state === "waking" && (
@@ -216,13 +283,111 @@ function PageIntro({ eyebrow, title, description, action }) {
   );
 }
 
+function AuthScreen({ apiReady, serverState, authState, error, onAuthenticate, onRetry }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState("");
+  const isSignup = mode === "signup";
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setFormError("");
+    try {
+      await onAuthenticate(
+        isSignup ? "/api/auth/signup" : "/api/auth/login",
+        { email, password },
+      );
+    } catch (issue) {
+      setFormError(issue.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <section className="auth-card">
+        <div className="auth-brand">
+          <div className="brand-mark">W</div>
+          <div><strong>workpilot</strong><span>AI workforce</span></div>
+        </div>
+        <div className="eyebrow">PRIVATE BUSINESS WORKSPACE</div>
+        <h1>{isSignup ? "Create your account" : "Welcome back"}</h1>
+        <p>Sign in to access your agents, knowledge, sales data, and task history.</p>
+        {!apiReady && (
+          <div className="wake-banner auth-wake">
+            {serverState === "waking" || serverState === "checking"
+              ? <><span className="spinner" /> Waking up the server…</>
+              : error || "The backend is not configured."}
+            {serverState !== "checking" && (
+              <button className="text-button" onClick={onRetry}>Retry</button>
+            )}
+          </div>
+        )}
+        {authState === "error" && apiReady && error && (
+          <ErrorNote error={error} onRetry={onRetry} />
+        )}
+        {authState === "checking" && apiReady && (
+          <div className="loading-line"><span className="spinner" /> Checking your session…</div>
+        )}
+        {apiReady && authState !== "checking" && (
+          <>
+            <form className="auth-form" onSubmit={submit}>
+              <label className="field">
+                <span className="field-label">Email address</span>
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  maxLength={320}
+                  required
+                />
+              </label>
+              <label className="field">
+                <span className="field-label">Password</span>
+                <input
+                  type="password"
+                  autoComplete={isSignup ? "new-password" : "current-password"}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  minLength={isSignup ? 12 : 1}
+                  maxLength={256}
+                  required
+                />
+                {isSignup && <small className="auth-help">Use at least 12 characters.</small>}
+              </label>
+              {formError && <ErrorNote error={formError} />}
+              <button className="button button-primary auth-submit" disabled={busy}>
+                {busy ? "Please wait…" : isSignup ? "Create account" : "Sign in"}
+              </button>
+            </form>
+            <div className="auth-switch">
+              {isSignup ? "Already have an account?" : "New to WorkPilot?"}
+              <button
+                className="text-button"
+                onClick={() => { setMode(isSignup ? "login" : "signup"); setFormError(""); }}
+              >
+                {isSignup ? "Sign in" : "Create account"}
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+    </main>
+  );
+}
+
 function TaskCard({ task, api, onNavigate, statusCodes }) {
   const [current, setCurrent] = useState(task);
   const [taskError, setTaskError] = useState("");
   useEffect(() => setCurrent(task), [task]);
   useEffect(() => {
     if (![statusCodes.task.planned, statusCodes.task.running].includes(current.status) || !API_BASE) return undefined;
-    const stream = new EventSource(`${API_BASE}/api/tasks/${current.id}/events/stream`);
+    const stream = new EventSource(`${API_BASE}/api/tasks/${current.id}/events/stream`, { withCredentials: true });
     stream.addEventListener("update", (event) => {
       try {
         const update = JSON.parse(event.data);

@@ -21,6 +21,7 @@ from app.validator import InvalidVerdict, validate_draft
 def _record_model_call(
     db: Session,
     task_id: str,
+    workspace_id: str,
     step_id: str | None,
     model: str,
     prompt: str,
@@ -34,7 +35,9 @@ def _record_model_call(
             "step_id": step_id,
             "prompt": prompt,
             "cost": cost,
-            "currency": str(setting_value(db, "billing_currency")),
+            "currency": str(
+                setting_value(db, "billing_currency", workspace_id=workspace_id)
+            ),
         },
         model=model,
     ))
@@ -43,11 +46,21 @@ def _record_model_call(
 
 async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
     with SessionLocal() as db:
-        step = db.get(TaskStep, step_id)
         task = db.get(Task, task_id)
+        step = db.scalar(
+            select(TaskStep).where(
+                TaskStep.id == step_id,
+                TaskStep.task_id == task_id,
+            )
+        )
         if step is None or task is None:
             raise ValueError("The task or planned step no longer exists.")
-        agent = db.get(Agent, step.agent_id) if step.agent_id else None
+        agent = db.scalar(
+            select(Agent).where(
+                Agent.id == step.agent_id,
+                Agent.workspace_id == task.workspace_id,
+            )
+        ) if step.agent_id else None
         if agent is None:
             raise ValueError("The assigned agent no longer exists; edit the plan and retry.")
         step.status = StepStatus.RUNNING.value
@@ -67,6 +80,7 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
             sources = await retrieve(
                 db,
                 f"{task.instruction}\n{step.description}",
+                workspace_id=task.workspace_id,
                 task_id=task_id,
                 step_id=step_id,
             )
@@ -90,7 +104,7 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
             ))
             db.commit()
         if "sales_summary" in step.tools:
-            tool_results["sales_summary"] = sales_summary(db)
+            tool_results["sales_summary"] = sales_summary(db, task.workspace_id)
             db.add(Event(
                 task_id=task_id,
                 event_type="tool_call",
@@ -100,7 +114,10 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
             db.commit()
         if "enquiry_search" in step.tools:
             enquiries = db.scalars(
-                select(Enquiry).order_by(Enquiry.created_at.desc()).limit(20)
+                select(Enquiry)
+                .where(Enquiry.workspace_id == task.workspace_id)
+                .order_by(Enquiry.created_at.desc())
+                .limit(20)
             ).all()
             tool_results["enquiry_search"] = [
                 {
@@ -122,7 +139,13 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
             ))
             db.commit()
 
-        retry_limit = max(0, min(int(setting_value(db, "retry_limit")), 10))
+        retry_limit = max(
+            0,
+            min(
+                int(setting_value(db, "retry_limit", workspace_id=task.workspace_id)),
+                10,
+            ),
+        )
         feedback: list[str] = []
         verdict: dict = {}
         output = ""
@@ -139,7 +162,9 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
                 "Do not invent policies, facts, or numeric results. Cite knowledge sources by document "
                 "and chunk ID. Return the draft only; no external action is authorized."
             )
-            system_prompt = str(setting_value(db, "system_prompt"))
+            system_prompt = str(
+                setting_value(db, "system_prompt", workspace_id=task.workspace_id)
+            )
             system_prompt += (
                 f"\n\nAgent name: {agent.name}\nRole: {agent.role}\n"
                 f"Agent instructions: {agent.instructions}\n"
@@ -150,11 +175,26 @@ async def _execute_step(task_id: str, step_id: str, context: dict) -> dict:
                 [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 task_id=task_id,
                 step_id=step_id,
+                workspace_id=task.workspace_id,
             )
             output = response.content
-            _record_model_call(db, task_id, step_id, response.model, user_prompt, response.cost)
+            _record_model_call(
+                db,
+                task_id,
+                task.workspace_id,
+                step_id,
+                response.model,
+                user_prompt,
+                response.cost,
+            )
             verdict, validator_sources, validator_model, validator_prompt = await validate_draft(
-                db, task_id, step_id, task.instruction, output, tool_results
+                db,
+                task_id,
+                step_id,
+                task.workspace_id,
+                task.instruction,
+                output,
+                tool_results,
             )
             if verdict["valid"]:
                 break
@@ -208,6 +248,7 @@ async def execute_task(task_id: str) -> None:
                     db,
                     task.instruction,
                     task.id,
+                    task.workspace_id,
                     (task.shared_context or {}).get("agent_filter"),
                 )
                 task.plan = plan
@@ -226,7 +267,13 @@ async def execute_task(task_id: str) -> None:
                         "step_id": None,
                         "prompt": plan_prompt,
                         "cost": plan_cost,
-                        "currency": str(setting_value(db, "billing_currency")),
+                        "currency": str(
+                            setting_value(
+                                db,
+                                "billing_currency",
+                                workspace_id=task.workspace_id,
+                            )
+                        ),
                     },
                     model=model,
                 ))
